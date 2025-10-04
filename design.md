@@ -3,11 +3,24 @@ Design and train multi-agent reinforcement learning policies for simulated bacte
 
 # Design (under construction)
 ## Environment
-32x32 grid?
+### reduced biophysics
+- squared grid 64x64, each grid is either a cell or nutrient(empty)
+- The colony starts with one cell, taking only 1 grid. Each cell can take more than one grid after they grow. When they take on more than 1 grid, the cell tends to divide with some probability. 
+- when the cell takes only 1 grid, they can choose to grow vertically or diagonally
+- when a cell decide grow, it 
 
 ## Marcov Decision Process
-- states: cell center (x,y), energy, age, alive_flag
-- actions: 0 = stay, 1 = eat/grow, 2 = divide, 3 = produceEnzyme (optional), 4 = dormancy
+- states: 
+    - cell center (x,y), 
+    - cell orientation,
+    - pole length
+    - energy?
+
+- actions: 
+    - 0 = grow, 
+    - 1 = divide, 
+    - 2 = dormancy
+
 - rewards:
     - individual rewards: nutrient_consumed, division_success, crowd_penalty, action_cost
     - shared (colony) rewards: colony_size, distance between simualated features and authetic features
