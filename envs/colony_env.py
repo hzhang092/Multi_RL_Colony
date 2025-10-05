@@ -335,6 +335,7 @@ class ColonyEnv(gym.Env):
         cx, cy = 0.5 * self.world_size # Start in the center
         first = CapsuleCell(center=np.array([cx, cy], dtype=float), theta=0.0, L=1.0, r=self.r)
         self.cells: List[CapsuleCell] = [first]
+        self._recent_divisions = {}  # Track divisions for reward calculation
         return self._gather_obs(), {} # empty info
 
     def step(self, action):
@@ -375,6 +376,7 @@ class ColonyEnv(gym.Env):
         # relax overlaps
         self._relax_positions(max_iters=12)
         # perform pending divisions (children placed + jitter)
+        divided_cell_rewards = {}  # Track which cells successfully divided for reward
         if any(c.pending_divide for c in self.cells):
             new_cells = []
             parents_to_remove = []
@@ -382,6 +384,7 @@ class ColonyEnv(gym.Env):
                 if cell.pending_divide:
                     cell.pending_divide = False
                     parents_to_remove.append(i)
+                    divided_cell_rewards[i] = True  # Mark this cell as having divided
                     # Daughter cells are slightly shorter than half the parent's length.
                     Lc = max(0.48 * cell.L, 0.5 * self.L_divide * 0.9)
                     ux = np.array([math.cos(cell.theta), math.sin(cell.theta)])
@@ -397,6 +400,9 @@ class ColonyEnv(gym.Env):
             self.cells.extend(new_cells)
             # A final relaxation step to accommodate the new cells
             self._relax_positions(max_iters=20)
+        
+        # Store division info for reward calculation
+        self._recent_divisions = divided_cell_rewards
         obs = self._gather_obs()
         rewards = self._compute_rewards()
         terminated, truncated = self._check_done()
@@ -546,12 +552,19 @@ class ColonyEnv(gym.Env):
         per_agent = []
         for c in self.cells:
             # Penalty for being too far from the ideal division length
-            L_norm = c.L / self.L_divide
+            L_norm = c.L / (self.L_divide * 2)
             r_len = -0.2 * abs(L_norm - 1.0)
             # Small penalty for age to encourage division
-            r_rot = -0.01 * min(abs(c.age)/100.0, 1.0)
-            # Each agent gets its individual penalties plus a share of the global reward
-            per_agent.append(r_len + r_rot + (R_morph / max(1, len(self.cells)))*0.2)
+            r_age = -0.01 * min(abs(c.age)/100.0, 1.0)
+            # Reward for successful division (for newly created daughter cells)
+            r_divide = 0.5 if c.just_divided else 0.0
+            # Each agent gets its individual penalties/rewards plus a share of the global reward
+            per_agent.append(r_len + r_age + r_divide + (R_morph / max(1, len(self.cells)))*0.2)
+        
+        # Reset the just_divided flags after computing rewards
+        for c in self.cells:
+            c.just_divided = False
+            
         return np.array(per_agent, dtype=np.float32)
 
     def _check_done(self):
