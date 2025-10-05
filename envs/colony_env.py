@@ -303,9 +303,8 @@ class ColonyEnv(gym.Env):
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
         self.action_space = spaces.Dict({
-            "type": spaces.Discrete(3),  # 0: no-op, 1: grow, 2: divide
-            "grow_frac": spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32),
-            "torque": spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32) # rotation modulation
+            "type": spaces.Discrete(3),  # 0: dormant, 1: grow, 2: divide
+            "grow_frac": spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32)
         })
         # Observation: [self_features, neighbor_1_features, ..., neighbor_K_features]
         # Self features (5): L, sin(theta), cos(theta), age, local_density
@@ -363,11 +362,7 @@ class ColonyEnv(gym.Env):
         for cell, a in zip(self.cells, actions_per_agent):
             atype = int(a["type"])
             grow_frac = float(a["grow_frac"])
-            torque = float(a["torque"])
-            max_rot = 0.12 # max rotation per step (radians)
             max_growth = 0.8
-            cell.theta += torque * max_rot
-            cell.theta = (cell.theta + math.pi) % (2*math.pi) - math.pi
             if atype == 1: # Grow action
                 dL = max_growth * grow_frac
                 cell.L += dL
@@ -550,24 +545,26 @@ class ColonyEnv(gym.Env):
             #d_morph += np.linalg.norm(F - f_t)
         R_morph = -1.0 * d_morph
         """# Temporarily disable global morphology reward for simplicity
-        
+        R_morph = 0.0
+        # Bonus for colony size (up to max_cells)
         colony_size = len(self.cells)
-        if colony_size < self.max_cells:
-            R_morph = 0.0  # No global reward for very large colonies
+        if colony_size >= self.max_cells:
+            R_morph += 0.0  # No global reward for very large colonies
         else:
-            R_morph = 0.1 * colony_size  # Simple reward scaling with colony size
+            R_morph += 0.1 * colony_size  # Simple reward scaling with colony size
 
         # --- Compute Per-Agent Rewards ---
         per_agent = []
         for c in self.cells:
             # Penalty for being too far from the ideal division length
-            L_norm = c.L / (self.L_divide * 1.5)
+            L_norm = c.L / (self.L_divide)
             r_len = -0.2 * abs(L_norm - 1.0)
             # Small penalty for age to encourage division
-            r_age = -0.01 * min(abs(c.age)/10.0, 1.0)
+            r_age = -0.05 * min(abs(c.age)/10.0, 1.0)
             # Reward for successful division (for newly created daughter cells)
             r_divide = 1.0 if c.just_divided else 0.0
             # Each agent gets its individual penalties/rewards plus a share of the global reward
+            #print(f"Length Reward: {r_len}, Age Reward: {r_age}, Divide Reward: {r_divide}, Morphology Reward: {(R_morph / max(1, len(self.cells)))*0.2}")
             per_agent.append(r_len + r_age + r_divide + (R_morph / max(1, len(self.cells)))*0.2)
         
         # Reset the just_divided flags after computing rewards

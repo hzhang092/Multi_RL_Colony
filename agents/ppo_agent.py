@@ -52,8 +52,8 @@ class SharedActorCritic(nn.Module):
     
     This network serves as both the policy (actor) and value function (critic) for all agents
     in the colony environment. It handles the hybrid action space consisting of:
-    - Discrete action type selection (3 types: grow, reproduce, move)
-    - Continuous parameters (grow_frac, torque)
+    - Discrete action type selection (3 types: dormant, grow, reproduce)
+    - Continuous parameters grow_frac
     
     Architecture:
     - Shared encoder: Maps observations to hidden representations
@@ -90,8 +90,8 @@ class SharedActorCritic(nn.Module):
             nn.ReLU()
         )
         self.type_head = nn.Linear(hidden, n_types)
-        self.param_mean = nn.Linear(hidden, 2)
-        self.param_logstd = nn.Parameter(torch.ones(2) * -0.5)
+        self.param_mean = nn.Linear(hidden, 1)  # Output mean for grow_frac
+        self.param_logstd = nn.Parameter(torch.ones(1) * -0.5) 
         self.value_head = nn.Linear(hidden, 1)
 
     def forward(self, obs: torch.FloatTensor):
@@ -168,13 +168,11 @@ def make_action_dicts(type_tensor: torch.Tensor, param_tensor: torch.Tensor):
     types = type_tensor.cpu().numpy().astype(int)
     params = param_tensor.cpu().numpy()
     actions = []
-    for t, (grow_raw, torque_raw) in zip(types, params):
+    for t, grow_raw in zip(types, params):
         grow_frac = float(1 / (1 + math.exp(-grow_raw)))  # sigmoid
-        torque = float(math.tanh(torque_raw))             # tanh
         actions.append({
             "type": int(t),
-            "grow_frac": np.array([grow_frac], dtype=np.float32),
-            "torque": np.array([torque], dtype=np.float32)
+            "grow_frac": np.array([grow_frac], dtype=np.float32)
         })
     return actions
 
