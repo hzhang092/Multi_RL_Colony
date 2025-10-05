@@ -272,7 +272,7 @@ class ColonyEnv(gym.Env):
                  r=0.5,
                  L_init=1.0,
                  L_divide=2.0,
-                 max_cells=50,
+                 max_cells=80,
                  K_nn=6, # number of nearest neighbors in observation
                  fourier_K=8,
                  seed: Optional[int]=None):
@@ -292,6 +292,7 @@ class ColonyEnv(gym.Env):
         super().__init__()
         self.world_size = np.array(world_size, dtype=float)
         self.r = r
+        self.L_init = L_init # initial length of the first cell
         self.L_divide = L_divide
         self.K_nn = K_nn
         self.max_cells = max_cells
@@ -333,7 +334,7 @@ class ColonyEnv(gym.Env):
 
         self.t = 0
         cx, cy = 0.5 * self.world_size # Start in the center
-        first = CapsuleCell(center=np.array([cx, cy], dtype=float), theta=0.0, L=1.0, r=self.r)
+        first = CapsuleCell(center=np.array([cx, cy], dtype=float), theta=0.0, L=self.L_init, r=self.r)
         self.cells: List[CapsuleCell] = [first]
         self._recent_divisions = {}  # Track divisions for reward calculation
         return self._gather_obs(), {} # empty info
@@ -363,8 +364,8 @@ class ColonyEnv(gym.Env):
             atype = int(a["type"])
             grow_frac = float(a["grow_frac"])
             torque = float(a["torque"])
-            max_rot = 0.12
-            max_growth = 0.08
+            max_rot = 0.12 # max rotation per step (radians)
+            max_growth = 0.8
             cell.theta += torque * max_rot
             cell.theta = (cell.theta + math.pi) % (2*math.pi) - math.pi
             if atype == 1: # Grow action
@@ -523,6 +524,7 @@ class ColonyEnv(gym.Env):
             np.ndarray: An array of reward values, one for each cell.
         """
         # --- Global Morphology Metrics ---
+        """
         centers = np.array([c.center for c in self.cells])
         AR = pca_aspect_ratio(centers) if len(centers)>=2 else 1.0 # aspect ratio
         # Compute convex hull of all cell endpoints
@@ -547,17 +549,24 @@ class ColonyEnv(gym.Env):
         #if f_t is not None and len(f_t)>0:
             #d_morph += np.linalg.norm(F - f_t)
         R_morph = -1.0 * d_morph
+        """# Temporarily disable global morphology reward for simplicity
+        
+        colony_size = len(self.cells)
+        if colony_size < self.max_cells:
+            R_morph = 0.0  # No global reward for very large colonies
+        else:
+            R_morph = 0.1 * colony_size  # Simple reward scaling with colony size
 
         # --- Compute Per-Agent Rewards ---
         per_agent = []
         for c in self.cells:
             # Penalty for being too far from the ideal division length
-            L_norm = c.L / (self.L_divide * 2)
+            L_norm = c.L / (self.L_divide * 1.5)
             r_len = -0.2 * abs(L_norm - 1.0)
             # Small penalty for age to encourage division
-            r_age = -0.01 * min(abs(c.age)/100.0, 1.0)
+            r_age = -0.01 * min(abs(c.age)/10.0, 1.0)
             # Reward for successful division (for newly created daughter cells)
-            r_divide = 0.5 if c.just_divided else 0.0
+            r_divide = 1.0 if c.just_divided else 0.0
             # Each agent gets its individual penalties/rewards plus a share of the global reward
             per_agent.append(r_len + r_age + r_divide + (R_morph / max(1, len(self.cells)))*0.2)
         
