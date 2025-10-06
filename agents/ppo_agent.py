@@ -423,7 +423,7 @@ class PPOAgent:
             lam (float): Lambda parameter for GAE
         
         Returns:
-            None
+            dict: A dictionary containing training statistics for logging.
         
         Note:
             The method modifies the policy network parameters in-place through
@@ -447,6 +447,10 @@ class PPOAgent:
         values_tensor = torch.tensor(np.array(buffer.values), dtype=torch.float32, device=self.device)
 
         n = obs_tensor.shape[0]
+        
+        # For logging
+        all_policy_loss, all_value_loss, all_entropy = [], [], []
+
         for epoch in range(epochs):
             idx = np.random.permutation(n)
             for start in range(0, n, batch_size):
@@ -472,3 +476,21 @@ class PPOAgent:
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.optimizer.step()
+
+                # Log stats
+                all_policy_loss.append(policy_loss.item())
+                all_value_loss.append(value_loss.item())
+                all_entropy.append(entropy.item())
+        
+        return {
+            "policy_loss": np.mean(all_policy_loss),
+            "value_loss": np.mean(all_value_loss),
+            "entropy": np.mean(all_entropy)
+        }
+
+
+"""
+Policy Loss (policy_loss): This measures how much the policy is changing. It should ideally decrease over time, indicating that the policy is stabilizing around an optimum. If it's flat, the agent isn't learning. If it's noisy or increasing, the learning rate might be too high.
+Value Loss (value_loss): This measures how well the critic is predicting the expected returns. It should also decrease, showing that the agent is getting better at estimating the value of states.
+Entropy (entropy): This measures the randomness or "exploratoriness" of the policy. It should gradually decrease as the agent becomes more confident in its actions. If it drops too quickly, the agent might be getting stuck in a suboptimal policy. If it stays high, the agent isn't learning a clear strategy.
+"""

@@ -78,16 +78,16 @@ ENV_SEED = 686                 # Fixed seed for reproducible experiments
 
 # Training schedule
 NUM_UPDATES = 500             # Total number of policy updates to perform
-STEPS_PER_UPDATE = 100         # Environment steps collected per policy update
+STEPS_PER_UPDATE = 150         # Environment steps collected per policy update
                                # Total training steps = NUM_UPDATES * STEPS_PER_UPDATE
 
 # PPO algorithm parameters
 PPO_EPOCHS = 4                 # Number of optimization epochs per collected batch
-MINIBATCH_SIZE = 4096          # Batch size for gradient updates
+MINIBATCH_SIZE = 1024          # Batch size for gradient updates
                                # Should be <= total transitions per update
 
 # Advantage estimation parameters
-GAMMA = 0.99                   # Discount factor for future rewards
+GAMMA = 0.9                   # Discount factor for future rewards
 LAM = 0.95                     # GAE lambda parameter (bias-variance tradeoff)
 
 # Checkpointing configuration
@@ -227,8 +227,11 @@ def main():
         # =====================================================
         # Policy Update Phase
         # =====================================================
+        # Get number of transitions before clearing buffer
+        num_transitions = len(buffer.obs)
+        
         # Perform PPO updates using collected experience
-        agent.ppo_update(buffer, PPO_EPOCHS, MINIBATCH_SIZE, GAMMA, LAM)
+        train_stats = agent.ppo_update(buffer, PPO_EPOCHS, MINIBATCH_SIZE, GAMMA, LAM)
         
         # Clear buffer for next rollout
         buffer.clear()
@@ -244,10 +247,13 @@ def main():
             
             print(f"Update {update:4d}/{NUM_UPDATES} | "
                   f"Steps: {total_steps:6d} | "
+                  f"Transitions: {num_transitions:5d} | "
                   f"Time: {elapsed_time:6.1f}s | "
-                  f"Avg Reward: {avg_reward:6.3f} | "
-                  f"Avg Num Cells: {avg_num_cells:6d} | "
-                  f"Max Num Cells: {max_num_cells:6d}")
+                  f"Reward: {avg_reward:6.3f} | "
+                  f"Cells: {avg_num_cells:4d} | "
+                  f"P_Loss: {train_stats['policy_loss']:.3f} | "
+                  f"V_Loss: {train_stats['value_loss']:.3f} | "
+                  f"Entropy: {train_stats['entropy']:.3f}")
             
             # Track best performance
             if avg_reward > best_reward:
