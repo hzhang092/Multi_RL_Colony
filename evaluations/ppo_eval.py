@@ -116,9 +116,12 @@ def run_evaluation(checkpoint_path: str,
     obs, _ = env.reset()
     obs_dim = obs.shape[1]
     print(f"Environment initialized with observation dimension: {obs_dim}")
-    
-    # Load trained agent
-    agent = load_agent(checkpoint_path, obs_dim, device)
+
+    if checkpoint_path == "untrained":
+        agent = PPOAgent(obs_dim=obs_dim, device=device)
+    else:
+        # Load trained agent
+        agent = load_agent(checkpoint_path, obs_dim, device)
     
     # Tracking variables
     total_reward = 0.0
@@ -152,6 +155,7 @@ def run_evaluation(checkpoint_path: str,
             if deterministic:
                 # Use deterministic (greedy) actions
                 logits, param_mean, param_std, values = agent.policy(obs_tensor)
+                print(f"Logits: {logits}, Param Mean: {param_mean}, Param Std: {param_std}, Values: {values}")
                 probs = torch.softmax(logits, dim=-1)
                 sampled_type = torch.argmax(probs, dim=-1)
                 sampled_params = param_mean  # Use mean instead of sampling

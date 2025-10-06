@@ -35,19 +35,20 @@ def main():
     
     try:
         # Find the latest checkpoint
-        checkpoint_path = find_latest_checkpoint()
+        #checkpoint_path = find_latest_checkpoint()
+        checkpoint_path = Path(project_root / "ppo_checkpoints" / "ppo_colony_100.pt")
         print(f"📁 Using checkpoint: {Path(checkpoint_path).name}")
         
         # Run evaluation with visualization
         print("🚀 Starting visualization...")
         results = run_evaluation(
-            checkpoint_path=checkpoint_path,
+            checkpoint_path="untrained",  #checkpoint_path,
             render=True,           # Enable visualization
-            max_steps=100,         # Run for up to 100 steps
-            deterministic=True,    # Use deterministic actions
+            max_steps=150,         # Run for up to 150 steps
+            deterministic=False,    # Use deterministic actions
             save_frames=False,     # Don't save frames by default
             frame_interval=3,      # Update every 3 steps
-            env_seed=686          # Fixed seed for reproducibility
+            env_seed=686           # Fixed seed for reproducibility
         )
         
         print("\n🎉 Visualization completed!")
