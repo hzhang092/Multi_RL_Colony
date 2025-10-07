@@ -211,8 +211,7 @@ def fourier_descriptor_from_boundary(boundary_pts: np.ndarray, K=8):
         descriptor.append((mags[k] / mags0) if k < len(mags) else 0.0)
     return np.array(descriptor)
 
-# ---------- Stick cell (no radius) ----------
-
+# ---------- Stick cell ----------
 @dataclass
 class StickCell:
     """
@@ -301,14 +300,16 @@ class ColonyEnv(gym.Env):
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
         self.action_space = spaces.Discrete(3)  # 0: dormant, 1: grow, 2: divide
-        # Observation: [self_features, neighbor_1_features, ..., neighbor_K_features]
-        # Self features (5): length, sin(theta), cos(theta), age, local_density
-        # Neighbor features (5 per neighbor): rel_x, rel_y, dist, sin(theta), cos(theta)
-        obs_dim = 5 + self.K_nn * 5
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32) 
+        # Observation per cell (4 features):
+        #  - rel_length: current length / division length
+        #  - local_density: smoothed local crowding via Gaussian kernel
+        #  - pressure_proxy: averaged inverse distance to neighbors
+        #  - orientation: cell angle (radians)
+        obs_dim = 4
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
 
         # Define the target morphology for the reward function.
-        self.M_target = {"AR": 0.7, "D": 0.9, "F": np.zeros(self.fourier_K)} # target morphology metrics
+        self.M_target = {"AR": 0.7, "D": 0.9, "F": np.zeros(self.fourier_K)}  # target morphology metrics
         self.reset()
 
     def reset(self, *, seed: Optional[int]=None, options: Optional[dict]=None):
@@ -406,49 +407,49 @@ class ColonyEnv(gym.Env):
 
     def _obs_for_cell(self, idx, centers):
         """
-        Computes the observation for a single cell.
-
-        Args:
-            idx (int): The index of the cell in `self.cells`.
-            centers (np.ndarray): An array of all cell centers.
-
-        Returns:
-            np.ndarray: The observation vector for the specified cell.
+        Compute observation for a single cell with 4 features:
+        - rel_length: current length / division length
+        - local_density: smoothed local crowding using a Gaussian kernel
+        - pressure_proxy: averaged inverse distance to neighbors
+        - orientation: cell angle in radians
         """
         cell = self.cells[idx]
-        # K-nearest neighbors
+        # Distances to all cells
         diffs = centers - cell.pos
         dists = np.linalg.norm(diffs, axis=1)
-        # Get indices of K+1 nearest, then exclude self (which is at index 0)
-        nn_indices = np.argsort(dists)[1:self.K_nn+1]
-        
-        # Self features
-        s_theta, c_theta = math.sin(cell.theta), math.cos(cell.theta)
-        
-        # Local density calculation
-        local_density = 0
-        if len(self.cells) > 1:
-            # Consider neighbors within a radius of L_divide for density calculation
-            neighbors_in_radius = np.sum(dists < self.L_divide) - 1
-            local_density = neighbors_in_radius / self.K_nn # Normalize by K_nn
 
-        self_obs = [cell.length, s_theta, c_theta, cell.age, local_density]
-        
-        # Neighbor features
-        neighbor_obs = []
-        for i in nn_indices:
-            neighbor = self.cells[i]
-            rel_pos = neighbor.pos - cell.pos
-            dist = dists[i]
-            n_st, n_ct = math.sin(neighbor.theta), math.cos(neighbor.theta)
-            neighbor_obs.extend([rel_pos[0], rel_pos[1], dist, n_st, n_ct])
-        
-        # Pad with zeros if fewer than K neighbors
-        num_neighbors = len(nn_indices)
-        if num_neighbors < self.K_nn:
-            neighbor_obs.extend([0.0] * (5 * (self.K_nn - num_neighbors)))
-            
-        return np.array(self_obs + neighbor_obs, dtype=np.float32)
+        # Exclude self (distance ~ 0) for neighbor-based metrics
+        mask = np.ones(len(dists), dtype=bool)
+        mask[idx] = False
+        neighbor_dists = dists[mask]
+
+        # 1) Relative length
+        rel_length = float(cell.length / max(self.L_divide, 1e-9))
+
+        # 2) Local density (Gaussian kernel smoothing)
+        # Use sigma proportional to division length for locality
+        if neighbor_dists.size > 0:
+            sigma = max(0.25 * self.L_divide, 1e-6)
+            weights = np.exp(-0.5 * (neighbor_dists / sigma) ** 2)
+            local_density = float(np.sum(weights))
+        else:
+            local_density = 0.0
+
+        # 3) Pressure proxy: mean inverse distance to neighbors within a cutoff
+        if neighbor_dists.size > 0:
+            cutoff = 2.0 * self.L_divide
+            near = neighbor_dists[neighbor_dists <= cutoff] if cutoff > 0 else neighbor_dists
+            if near.size > 0:
+                pressure_proxy = float(np.mean(1.0 / (near + 1e-6)))
+            else:
+                pressure_proxy = 0.0
+        else:
+            pressure_proxy = 0.0
+
+        # 4) Orientation (raw angle)
+        orientation = float(cell.theta)
+
+        return np.array([rel_length, local_density, pressure_proxy, orientation], dtype=np.float32)
 
     def _relax_positions(self, max_iters=12):
         """
