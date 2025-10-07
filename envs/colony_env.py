@@ -30,6 +30,8 @@ from typing import List, Tuple, Optional
 import gymnasium as gym
 from gymnasium import spaces
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.patches import Polygon
 
 # ---------- Geometry helpers (self-contained) ----------
 def seg_seg_closest_points(a0, a1, b0, b1):
@@ -209,28 +211,26 @@ def fourier_descriptor_from_boundary(boundary_pts: np.ndarray, K=8):
         descriptor.append((mags[k] / mags0) if k < len(mags) else 0.0)
     return np.array(descriptor)
 
-# ---------- Capsule cell ----------
+# ---------- Stick cell (no radius) ----------
 
 @dataclass
-class CapsuleCell:
+class StickCell:
     """
-    A data class representing a single capsule-shaped bacterial cell.
+    A data class representing a single stick-shaped bacterial cell.
 
     Attributes:
-        center (np.ndarray): The (x, y) coordinates of the cell's geometric center.
+        pos (np.ndarray): The (x, y) coordinates of the cell's geometric center.
         theta (float): The orientation angle in radians.
-        L (float): The total length of the cell's central axis.
-        r (float): The radius of the hemispherical caps.
+        length (float): The total length of the cell's central axis.
         age (float): The number of timesteps the cell has existed.
         pending_divide (bool): A flag set to True when the cell is ready to
                                divide in the next timestep.
         just_divided (bool): A flag set to True for cells created from division
                              in the current timestep, used for reward calculation.
     """
-    center: np.ndarray  # shape (2,)
+    pos: np.ndarray  # shape (2,)
     theta: float # orientation angle (radians)
-    L: float  # total length (center-to-pole distance = L/2 in each direction)
-    r: float  # radius(constant across cells)
+    length: float  # total length
     age: float = 0.0
     pending_divide: bool = False
     just_divided: bool = False
@@ -244,8 +244,9 @@ class CapsuleCell:
                                            coordinate vectors.
         """
         ux = np.array([math.cos(self.theta), math.sin(self.theta)])
-        half = 0.5 * self.L
-        return (self.center + ux * half, self.center - ux * half)
+        half = 0.5 * self.length
+        return (self.pos + ux * half, self.pos - ux * half)
+
 
 # ---------- Gymnasium environment ----------
 
@@ -269,7 +270,6 @@ class ColonyEnv(gym.Env):
 
     def __init__(self,
                  world_size=(64.0, 64.0),
-                 r=0.5,
                  L_init=1.0,
                  L_divide=2.0,
                  max_cells=80,
@@ -281,7 +281,6 @@ class ColonyEnv(gym.Env):
 
         Args:
             world_size (Tuple[float, float]): The (width, height) of the 2D world.
-            r (float): The radius of the capsule cells.
             L_init (float): The initial length of the first cell.
             L_divide (float): The length at which cells can divide.
             max_cells (int): The maximum number of cells before the episode ends.
@@ -291,7 +290,6 @@ class ColonyEnv(gym.Env):
         """
         super().__init__()
         self.world_size = np.array(world_size, dtype=float)
-        self.r = r
         self.L_init = L_init # initial length of the first cell
         self.L_divide = L_divide
         self.K_nn = K_nn
@@ -302,12 +300,9 @@ class ColonyEnv(gym.Env):
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
-        self.action_space = spaces.Dict({
-            "type": spaces.Discrete(3),  # 0: dormant, 1: grow, 2: divide
-            "grow_frac": spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32)
-        })
+        self.action_space = spaces.Discrete(3)  # 0: dormant, 1: grow, 2: divide
         # Observation: [self_features, neighbor_1_features, ..., neighbor_K_features]
-        # Self features (5): L, sin(theta), cos(theta), age, local_density
+        # Self features (5): length, sin(theta), cos(theta), age, local_density
         # Neighbor features (5 per neighbor): rel_x, rel_y, dist, sin(theta), cos(theta)
         obs_dim = 5 + self.K_nn * 5
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32) 
@@ -333,10 +328,11 @@ class ColonyEnv(gym.Env):
 
         self.t = 0
         cx, cy = 0.5 * self.world_size # Start in the center
-        first = CapsuleCell(center=np.array([cx, cy], dtype=float), theta=0.0, L=self.L_init, r=self.r)
-        self.cells: List[CapsuleCell] = [first]
+        first = StickCell(pos=np.array([cx, cy], dtype=float), theta=0.0, length=self.L_init)
+        self.cells: List[StickCell] = [first]
         self._recent_divisions = {}  # Track divisions for reward calculation
-        return self._gather_obs(), {} # empty info
+        obs = self._gather_obs()
+        return obs, {} # empty info
 
     def step(self, action):
         """
@@ -357,53 +353,43 @@ class ColonyEnv(gym.Env):
         actions_per_agent = action
         # actions_per_agent must be a list aligned with self.cells
         if len(actions_per_agent) != len(self.cells):
-            raise ValueError("Length of actions must equal number of cells.")
+            raise ValueError("Number of actions must match number of cells.")
         # apply actions (rotation, growth, mark division)
         for cell, a in zip(self.cells, actions_per_agent):
-            atype = int(a["type"])
-            grow_frac = float(a["grow_frac"])
-            max_growth = 0.8
-            if atype == 1: # Grow action
-                dL = max_growth * grow_frac
-                cell.L += dL
-            if atype == 2 and cell.L >= self.L_divide: # Divide action
-                cell.pending_divide = True
-            cell.age += 1.0
+            cell.age += self.dt
+            if a == 1: # grow
+                cell.length += 0.1 * self.dt
+            elif a == 2: # divide
+                if cell.length >= self.L_divide:
+                    cell.pending_divide = True
         # relax overlaps
         self._relax_positions(max_iters=12)
-        # perform pending divisions (children placed + jitter)
-        divided_cell_rewards = {}  # Track which cells successfully divided for reward
-        if any(c.pending_divide for c in self.cells):
-            new_cells = []
-            parents_to_remove = []
-            for i, cell in enumerate(self.cells):
-                if cell.pending_divide:
-                    cell.pending_divide = False
-                    parents_to_remove.append(i)
-                    divided_cell_rewards[i] = True  # Mark this cell as having divided
-                    # Daughter cells are slightly shorter than half the parent's length.
-                    Lc = max(0.48 * cell.L, 0.5 * self.L_divide * 0.9)
-                    ux = np.array([math.cos(cell.theta), math.sin(cell.theta)])
-                    offset = (Lc/2.0 + 0.01) * ux
-                    # Add some random jitter to the orientation of daughter cells.
-                    jitter = float(self.rng.normal(scale=0.08))
-                    c1 = CapsuleCell(center=cell.center + offset, theta=cell.theta + jitter, L=Lc, r=self.r, just_divided=True)
-                    c2 = CapsuleCell(center=cell.center - offset, theta=cell.theta - jitter, L=Lc, r=self.r, just_divided=True)
-                    new_cells.extend([c1, c2])
-            # Remove parent cells and add new daughter cells
-            for idx in sorted(parents_to_remove, reverse=True):
-                self.cells.pop(idx)
-            self.cells.extend(new_cells)
-            # A final relaxation step to accommodate the new cells
-            self._relax_positions(max_iters=20)
-        
-        # Store division info for reward calculation
-        self._recent_divisions = divided_cell_rewards
+        # handle divisions
+        new_cells = []
+        remaining_cells = []
+        for cell in self.cells:
+            if not cell.pending_divide:
+                remaining_cells.append(cell)
+                continue
+            # Divide the cell
+            jitter = self.rng.normal(0, 0.1)
+            L_new = cell.length / 2.0
+            offset_dist = L_new / 2.0
+            offset = offset_dist * np.array([math.cos(cell.theta), math.sin(cell.theta)])
+            
+            c1 = StickCell(pos=cell.pos + offset, theta=cell.theta + jitter, length=L_new, just_divided=True)
+            c2 = StickCell(pos=cell.pos - offset, theta=cell.theta - jitter, length=L_new, just_divided=True)
+            new_cells.extend([c1, c2])
+            self._recent_divisions[id(c1)] = self.t
+            self._recent_divisions[id(c2)] = self.t
+        self.cells = remaining_cells + new_cells
+        # time marches on
+        self.t += 1
+        # gather observations, rewards, and check for termination
         obs = self._gather_obs()
         rewards = self._compute_rewards()
         terminated, truncated = self._check_done()
-        info = {"t": self.t, "n_cells": len(self.cells)}
-        self.t += 1
+        info = {"n_cells": len(self.cells)}
         return obs, rewards, terminated, truncated, info
 
     def _gather_obs(self):
@@ -411,256 +397,341 @@ class ColonyEnv(gym.Env):
         Gathers observations for all cells in the colony.
 
         Returns:
-            np.ndarray: A stacked array of observation vectors, one per cell.
+            np.ndarray: An array of observations, one row per cell.
         """
-        centers = np.array([c.center for c in self.cells]) # cell centers, shape (N, 2)
-        obs_list = []
-        for i, c in enumerate(self.cells):
-            obs_list.append(self._obs_for_cell(i, centers))
-        return np.array(obs_list, dtype=np.float32)
+        if not self.cells:
+            return np.array([])
+        centers = np.array([c.pos for c in self.cells])
+        return np.array([self._obs_for_cell(i, centers) for i in range(len(self.cells))])
 
     def _obs_for_cell(self, idx, centers):
         """
-        Computes the observation vector for a single cell.
-
-        The observation includes the cell's own state (length, orientation, age,
-        local density) and the relative state of its K-nearest neighbors.
+        Computes the observation for a single cell.
 
         Args:
             idx (int): The index of the cell in `self.cells`.
-            centers (np.ndarray): Pre-computed array of all cell centers.
+            centers (np.ndarray): An array of all cell centers.
 
         Returns:
             np.ndarray: The observation vector for the specified cell.
         """
-        c = self.cells[idx] # c: capsule cell
-        # --- Self Features ---
-        L_norm = c.L / self.L_divide
-        sin_t, cos_t = math.sin(c.theta), math.cos(c.theta)
-        age_norm = c.age / 100.0
-        # --- Neighbor Features ---
-        dists = np.linalg.norm(centers - c.center, axis=1)
-        order = np.argsort(dists)
-        feats = []
-        count = 0
-        # Find K-nearest neighbors (excluding self, which is at index 0)
-        for j in order[1:self.K_nn+1]:
-            rel = centers[j] - c.center
-            dist = np.linalg.norm(rel)
-            if dist > 1e-8:
-                dir_norm = rel / (dist + 1e-9)
-            else:
-                dir_norm = np.array([0.0, 0.0])
-            sin2, cos2 = math.sin(self.cells[j].theta), math.cos(self.cells[j].theta)
-            # Relative direction, distance, and neighbor's orientation
-            feats.extend([dir_norm[0], dir_norm[1], dist / max(1.0, self.world_size[0]), sin2, cos2])
-            count += 1
-        # Pad with zeros if there are fewer than K neighbors
-        while count < self.K_nn:
-            feats.extend([0.0]*5)
-            count += 1
-        # --- Local Density ---
-        local_radius = max(2.0 * c.L, 4.0*c.r)
-        local_count = np.sum(dists < local_radius) - 1 # -1 for self
-        density = local_count / 8.0 # Normalize density
-        # Concatenate all features into a single vector
-        vec = np.concatenate([[L_norm, sin_t, cos_t, age_norm, density], feats])
-        return vec
+        cell = self.cells[idx]
+        # K-nearest neighbors
+        diffs = centers - cell.pos
+        dists = np.linalg.norm(diffs, axis=1)
+        # Get indices of K+1 nearest, then exclude self (which is at index 0)
+        nn_indices = np.argsort(dists)[1:self.K_nn+1]
+        
+        # Self features
+        s_theta, c_theta = math.sin(cell.theta), math.cos(cell.theta)
+        
+        # Local density calculation
+        local_density = 0
+        if len(self.cells) > 1:
+            # Consider neighbors within a radius of L_divide for density calculation
+            neighbors_in_radius = np.sum(dists < self.L_divide) - 1
+            local_density = neighbors_in_radius / self.K_nn # Normalize by K_nn
+
+        self_obs = [cell.length, s_theta, c_theta, cell.age, local_density]
+        
+        # Neighbor features
+        neighbor_obs = []
+        for i in nn_indices:
+            neighbor = self.cells[i]
+            rel_pos = neighbor.pos - cell.pos
+            dist = dists[i]
+            n_st, n_ct = math.sin(neighbor.theta), math.cos(neighbor.theta)
+            neighbor_obs.extend([rel_pos[0], rel_pos[1], dist, n_st, n_ct])
+        
+        # Pad with zeros if fewer than K neighbors
+        num_neighbors = len(nn_indices)
+        if num_neighbors < self.K_nn:
+            neighbor_obs.extend([0.0] * (5 * (self.K_nn - num_neighbors)))
+            
+        return np.array(self_obs + neighbor_obs, dtype=np.float32)
 
     def _relax_positions(self, max_iters=12):
         """
-        Resolves physical overlaps between cells using iterative relaxation.
+        Iteratively resolves overlaps between cells.
 
-        In each iteration, it checks every pair of cells for overlap. If two
-        cells overlap, they are pushed apart along the vector connecting their
-        closest points. This process is repeated for a fixed number of
-        iterations or until no more overlaps are detected.
+        This is a simple physics simulation where overlapping cells push each
+        other apart. The process is repeated for a fixed number of iterations
+        to allow forces to propagate through the colony.
 
         Args:
-            max_iters (int): The maximum number of relaxation iterations.
+            max_iters (int): The number of relaxation iterations to perform.
         """
-        N = len(self.cells)
-        if N <= 1:
-            return
-        for it in range(max_iters):
-            moved = 0
-            for i in range(N):
-                ci = self.cells[i]
-                a0, a1 = ci.endpoints()
-                for j in range(i+1, N):
-                    cj = self.cells[j]
-                    b0, b1 = cj.endpoints()
-                    # Find closest points on the central axes of the two cells
-                    Pa, Pb, d = seg_seg_closest_points(a0, a1, b0, b1)
-                    # The gap is the distance between surfaces
-                    gap = d - (ci.r + cj.r)
-                    if gap < 0:
-                        moved += 1
-                        nvec = Pa - Pb
-                        nv = unit_vector(nvec)
-                        # Push each cell by half of the overlap distance
-                        disp = -gap * 0.5 * nv
-                        ci.center += disp
-                        cj.center -= disp
-            if moved == 0:
-                break
+        for _ in range(max_iters):
+            for i in range(len(self.cells)):
+                for j in range(i + 1, len(self.cells)):
+                    c1, c2 = self.cells[i], self.cells[j]
+                    p1a, p1b = c1.endpoints()
+                    p2a, p2b = c2.endpoints()
+                    
+                    # Use a fixed radius for collision detection, as sticks have no radius
+                    effective_radius = 0.5 
+
+                    _, _, dist = seg_seg_closest_points(p1a, p1b, p2a, p2b)
+                    overlap = (2 * effective_radius) - dist
+                    
+                    if overlap > 0:
+                        # Simple linear push-apart
+                        direction = c2.pos - c1.pos
+                        if np.linalg.norm(direction) < 1e-9:
+                            direction = self.rng.random(2) - 0.5
+                        
+                        direction = unit_vector(direction)
+                        push = 0.5 * overlap * direction
+                        
+                        c1.pos -= push
+                        c2.pos += push
 
     def _compute_rewards(self):
         """
-        Computes the reward for the current state of the colony.
+        Computes rewards for all cells based on the colony's morphology.
 
-        The reward has two components:
-        1. A global, shared reward based on how well the colony's morphology
-           (aspect ratio, density, Fourier descriptors) matches a target.
-        2. A small, individual penalty for each cell to discourage undesirable
-           states (e.g., being too long without dividing).
+        The reward has several components:
+        - A global reward based on how well the colony's shape matches target
+          morphological metrics (aspect ratio, density, Fourier descriptors).
+        - A small penalty for existing to encourage growth and division.
+        - A bonus for cells that have just divided.
 
         Returns:
-            np.ndarray: An array of reward values, one for each cell.
+            np.ndarray: An array of rewards, one for each cell.
         """
-        # --- Global Morphology Metrics ---
-        """
-        centers = np.array([c.center for c in self.cells])
-        AR = pca_aspect_ratio(centers) if len(centers)>=2 else 1.0 # aspect ratio
-        # Compute convex hull of all cell endpoints
-        endpoints = []
-        for c in self.cells:
-            p1, p2 = c.endpoints()
-            endpoints.append(tuple(p1)); endpoints.append(tuple(p2))
-        endpoints = np.array(endpoints)
-        hull = monotone_chain_convex_hull(endpoints) if len(endpoints)>0 else endpoints
-        A_hull = polygon_area(hull) if len(hull)>=3 else (self.world_size[0]*self.world_size[1])
-        D = len(self.cells) / max(1e-6, A_hull) # density
-        #F = fourier_descriptor_from_boundary(hull if len(hull)>0 else centers, K=self.fourier_K) # Fourier descriptors
-
-        # --- Compute Global Reward ---
-        # The reward is the negative distance to the target morphology.
-        ar_t, d_t, f_t = self.M_target["AR"], self.M_target["D"], self.M_target["F"]
-        d_morph = 0.0
-        if ar_t > 0:
-            d_morph += abs(AR - ar_t) / (ar_t + 1e-9)
-        if d_t > 0:
-            d_morph += abs(D - d_t) / (d_t + 1e-9)
-        #if f_t is not None and len(f_t)>0:
-            #d_morph += np.linalg.norm(F - f_t)
-        R_morph = -1.0 * d_morph
-        """# Temporarily disable global morphology reward for simplicity
-        R_morph = 0.0
-        # Bonus for colony size (up to max_cells)
-        colony_size = len(self.cells)
-        if colony_size >= self.max_cells:
-            R_morph += 0.0  # No global reward for very large colonies
-        else:
-            R_morph += 0.1 * colony_size  # Simple reward scaling with colony size
-
-        # --- Compute Per-Agent Rewards ---
-        per_agent = []
-        for c in self.cells:
-            # Penalty for being too far from the ideal division length
-            L_norm = c.L / (self.L_divide)
-            r_len = -0.2 * abs(L_norm - 1.0)
-            # Small penalty for age to encourage division
-            r_age = -0.05 * min(abs(c.age)/10.0, 1.0)
-            # Reward for successful division (for newly created daughter cells)
-            r_divide = 1.0 if c.just_divided else 0.0
-            # Each agent gets its individual penalties/rewards plus a share of the global reward
-            #print(f"Length Reward: {r_len}, Age Reward: {r_age}, Divide Reward: {r_divide}, Morphology Reward: {(R_morph / max(1, len(self.cells)))*0.2}")
-            per_agent.append(r_len + r_age + r_divide + (R_morph / max(1, len(self.cells)))*0.2)
+        N = len(self.cells)
+        if N < 2:
+            return np.zeros(N)
         
-        # Reset the just_divided flags after computing rewards
-        for c in self.cells:
-            c.just_divided = False
-            
-        return np.array(per_agent, dtype=np.float32)
+        # --- Global morphology calculation ---
+        all_endpoints = np.vstack([c.endpoints() for c in self.cells])
+        hull_pts = monotone_chain_convex_hull(all_endpoints)
+        
+        # Aspect Ratio (AR)
+        AR = pca_aspect_ratio(all_endpoints)
+        
+        # Density (D)
+        colony_area = polygon_area(hull_pts)
+        
+        # Use a fixed radius for density calculation
+        effective_radius = 0.5
+        cell_area = sum(c.length * 2 * effective_radius for c in self.cells)
+        D = cell_area / colony_area if colony_area > 1e-9 else 0.0
+        
+        # Fourier Descriptors (F)
+        F = fourier_descriptor_from_boundary(hull_pts, K=self.fourier_K)
+        
+        # --- Reward calculation ---
+        # Compare current morphology to target
+        err_AR = (AR - self.M_target["AR"])**2
+        err_D = (D - self.M_target["D"])**2
+        err_F = np.mean((F - self.M_target["F"])**2)
+        
+        # Global reward is inverse of error (higher is better)
+        w_AR, w_D, w_F = 1.0, 1.0, 0.5
+        global_reward = 1.0 / (1.0 + w_AR*err_AR + w_D*err_D + w_F*err_F)
+        
+        # --- Per-agent rewards ---
+        rewards = np.full(N, global_reward)
+        
+        # Small penalty for existing (encourages faster growth/division)
+        rewards -= 0.01
+        
+        # Bonus for recent divisions
+        for i, cell in enumerate(self.cells):
+            if cell.just_divided:
+                rewards[i] += 0.5
+                cell.just_divided = False # Reset flag
+                
+        return rewards
 
     def _check_done(self):
         """
         Checks if the episode should terminate.
 
-        Termination occurs if the cell count reaches the maximum or if the
-        time limit is exceeded.
+        Termination occurs if the number of cells exceeds `max_cells`.
+        Truncation is not currently implemented but the hook is here.
 
         Returns:
-            bool: True if the episode is done, False otherwise.
+            Tuple[bool, bool]: A tuple of (terminated, truncated).
         """
         terminated = len(self.cells) >= self.max_cells
-        truncated = self.t >= 1000
+        truncated = False # No time limit for now
         return terminated, truncated
 
-    def render(self, mode="rgb_array", figsize=(6,6)):
+    def render(self, mode="rgb_array", figsize=(6, 6)):
         """
-        Renders the current state of the environment.
+        Render the current colony state with Matplotlib.
 
-        Args:
-            mode (str): The rendering mode. "rgb_array" returns an image as a
-                        numpy array. "human" displays the image using matplotlib.
-            figsize (Tuple[int, int]): The size of the figure for rendering.
+        - human: draws to an interactive window and pauses briefly
+        - rgb_array: returns an RGB numpy array of the current frame
 
-        Returns:
-            Union[np.ndarray, None]: An RGB array if mode is "rgb_array", otherwise None.
+        The first call initializes a persistent figure/axes; subsequent calls
+        reuse them for better performance.
         """
-        fig, ax = plt.subplots(figsize=figsize)
-        ax.set_xlim(0, self.world_size[0]); ax.set_ylim(0, self.world_size[1])
-        ax.set_aspect('equal', 'box')
-        for c in self.cells:
-            p1, p2 = c.endpoints()
-            xs = [p1[0], p2[0]]; ys=[p1[1], p2[1]]
-            # The 'linewidth' is scaled to represent the cell's radius.
-            ax.plot(xs, ys, color='black', linewidth=2*c.r)
-            mid = c.center
-            # Draw an arrow to indicate the cell's orientation.
-            ax.arrow(mid[0], mid[1], 0.5*math.cos(c.theta), 0.5*math.sin(c.theta),
-                     head_width=0.2, head_length=0.2, fc='red', ec='red', linewidth=0.8)
-        ax.set_title(f"t={self.t}, cells={len(self.cells)}")
-        ax.set_xticks([]); ax.set_yticks([])
-        
-        if mode == "rgb_array":
-            # Use the most reliable method - save to memory and read back
+        if mode not in ("human", "rgb_array"):
+            raise ValueError("mode must be 'human' or 'rgb_array'")
+
+        # Initialize persistent figure/axes once
+        if not hasattr(self, "fig") or self.fig is None or not hasattr(self, "ax"):
+            self.fig, self.ax = plt.subplots(figsize=figsize)
+            if mode == "human":
+                try:
+                    plt.ion()
+                    mgr = getattr(self.fig.canvas, "manager", None)
+                    if mgr is not None and hasattr(mgr, "set_window_title"):
+                        mgr.set_window_title("ColonyEnv")
+                except Exception:
+                    # Backend might not support window title; safe to ignore
+                    pass
+
+        ax = self.ax
+        if ax is None:
+            # Create an axes if missing (defensive guard for atypical backends)
+            ax = self.fig.add_subplot(111)
+            self.ax = ax
+        ax.clear()
+
+        # World bounds and styling
+        width, height = self.world_size
+        ax.set_xlim(0, width)
+        ax.set_ylim(0, height)
+        ax.set_aspect("equal")
+        ax.set_facecolor("#f7f7f7")
+        ax.grid(False)
+        ax.set_title(f"Colony Simulation — {len(self.cells)} cells | t={self.t}")
+
+        # Draw convex hull of all endpoints (gives a sense of colony outline)
+        if len(self.cells) >= 2:
             try:
-                import io
-                # Force draw the figure
-                fig.canvas.draw()
-                
-                # Save figure to in-memory buffer as PNG
-                buf = io.BytesIO()
-                fig.savefig(buf, format='png', dpi=100, bbox_inches='tight',
-                           facecolor='white', edgecolor='none', pad_inches=0.1)
-                buf.seek(0)
-                
-                # Read the PNG image back as RGB array
-                import matplotlib.image as mpimg
-                img = mpimg.imread(buf, format='png')
-                
-                # Convert to RGB if needed
-                if img.shape[-1] == 4:  # RGBA format
-                    if img.max() <= 1.0:  # Normalized values
-                        rgb_array = (img[:, :, :3] * 255).astype(np.uint8)
-                    else:  # Already in 0-255 range
-                        rgb_array = img[:, :, :3].astype(np.uint8)
-                elif img.shape[-1] == 3:  # RGB format
-                    if img.max() <= 1.0:  # Normalized values
-                        rgb_array = (img * 255).astype(np.uint8)
-                    else:  # Already in 0-255 range
-                        rgb_array = img.astype(np.uint8)
-                else:
-                    # Grayscale - convert to RGB
-                    if img.max() <= 1.0:
-                        gray = (img * 255).astype(np.uint8)
-                    else:
-                        gray = img.astype(np.uint8)
-                    rgb_array = np.stack([gray, gray, gray], axis=-1)
-                
-                buf.close()
-                plt.close(fig)
-                return rgb_array
-                
-            except Exception as e:
-                print(f"Warning: Render failed: {e}")
-                plt.close(fig)
-                # Return a simple fallback image
-                return np.full((400, 400, 3), 200, dtype=np.uint8)  # Light gray image
-                
-        elif mode == "human":
-            plt.show()
-            plt.close(fig)
+                all_endpoints = np.vstack([c.endpoints() for c in self.cells])
+                hull_pts = monotone_chain_convex_hull(all_endpoints)
+                if len(hull_pts) >= 3:
+                    poly = Polygon(hull_pts, closed=True, facecolor="#90caf955", edgecolor="#2196f3", linewidth=1.5)
+                    ax.add_patch(poly)
+            except Exception:
+                # Hull calculation can fail in degenerate cases; ignore
+                pass
+
+        # Prepare segments for efficient drawing with LineCollection
+        segments = []
+        colors = []
+        widths = []
+        centers_x = []
+        centers_y = []
+        center_colors = []
+
+        for cell in self.cells:
+            p1, p2 = cell.endpoints()
+            segments.append([p1, p2])
+
+            if cell.pending_divide:
+                c = "#e53935"  # red
+                lw = 3.0
+            elif cell.just_divided:
+                c = "#43a047"  # green
+                lw = 2.5
+            else:
+                c = "#1e88e5"  # blue
+                lw = 2.0
+
+            colors.append(c)
+            widths.append(lw)
+            centers_x.append(cell.pos[0])
+            centers_y.append(cell.pos[1])
+            center_colors.append(c)
+
+        if segments:
+            lc = LineCollection(segments, colors=colors, linewidths=widths, capstyle="round", joinstyle="round")
+            ax.add_collection(lc)
+            # Small markers at centers
+            ax.scatter(centers_x, centers_y, s=10, c=center_colors, alpha=0.6, edgecolors="none")
+
+        # Overlay info box
+        info_text = f"time: {self.t}\ncells: {len(self.cells)}"
+        ax.text(
+            0.02,
+            0.98,
+            info_text,
+            transform=ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="#777777", alpha=0.85),
+        )
+
+        if mode == "human":
+            # Draw and briefly pause to update the interactive window
+            self.fig.canvas.draw_idle()
+            plt.pause(1.0 / max(self.metadata.get("render_fps", 4), 1))
             return None
+
+        # rgb_array: return the pixel buffer
+        self.fig.canvas.draw()
+        w, h = self.fig.canvas.get_width_height()
+        # Attempt RGB via getattr to appease static analyzers and support multiple backends
+        to_rgb = getattr(self.fig.canvas, "tostring_rgb", None)
+        if callable(to_rgb):
+            try:
+                rgb_obj = to_rgb()
+                if isinstance(rgb_obj, (bytes, bytearray, memoryview)):
+                    rgb_bytes = bytes(rgb_obj)
+                    buf = np.frombuffer(rgb_bytes, dtype=np.uint8)
+                    expected = w * h * 3
+                    if buf.size != expected and w > 0 and h > 0:
+                        # Adjust for DPI scaling by inferring scale factor
+                        scale = (buf.size / 3) / (w * h)
+                        s = max(scale, 1.0) ** 0.5
+                        w2 = int(round(w * s))
+                        h2 = int(round(h * s))
+                        if w2 * h2 * 3 == buf.size:
+                            return buf.reshape(h2, w2, 3)
+                    return buf.reshape(h, w, 3)
+            except Exception:
+                pass
+        # Try RGBA buffer and strip alpha
+        rgba_bytes = None
+        buffer_rgba = getattr(self.fig.canvas, "buffer_rgba", None)
+        if callable(buffer_rgba):
+            try:
+                rgba_obj = buffer_rgba()
+                if isinstance(rgba_obj, (bytes, bytearray, memoryview)):
+                    rgba_bytes = bytes(rgba_obj)
+            except Exception:
+                rgba_bytes = None
+        if rgba_bytes is None:
+            # Try renderer-based access as a fallback (Agg backends)
+            try:
+                renderer = getattr(self.fig.canvas, "get_renderer", None)
+                if callable(renderer):
+                    r = renderer()
+                    rb = getattr(r, "buffer_rgba", None)
+                    if callable(rb):
+                        rgba_obj2 = rb()
+                        if isinstance(rgba_obj2, (bytes, bytearray, memoryview)):
+                            rgba_bytes = bytes(rgba_obj2)
+            except Exception:
+                rgba_bytes = None
+        if rgba_bytes is not None:
+            buf_rgba = np.frombuffer(rgba_bytes, dtype=np.uint8)
+            expected = w * h * 4
+            if buf_rgba.size != expected and w > 0 and h > 0:
+                # Adjust for DPI scaling by inferring scale factor
+                scale = (buf_rgba.size / 4) / (w * h)
+                s = max(scale, 1.0) ** 0.5
+                w2 = int(round(w * s))
+                h2 = int(round(h * s))
+                if w2 * h2 * 4 == buf_rgba.size:
+                    rgba = buf_rgba.reshape(h2, w2, 4)
+                    return rgba[..., :3]
+            rgba = buf_rgba.reshape(h, w, 4)
+            return rgba[..., :3]
+        # Last resort: return an empty image with correct shape
+        return np.zeros((h, w, 3), dtype=np.uint8)
+
+    def close(self):
+        """Clean up matplotlib figures."""
+        if hasattr(self, 'fig') and self.fig is not None:
+            plt.close(self.fig)
+            self.fig = None
+            self.ax = None

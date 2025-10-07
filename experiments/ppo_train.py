@@ -169,11 +169,11 @@ def main():
             obs_tensor = torch.tensor(obs, dtype=torch.float32, device=DEVICE)
             
             # Sample actions from current policy
-            # Returns: action types, continuous parameters, log-probs, value estimates
-            sampled_type, sampled_params, logp, values = agent.act(obs_tensor)
+            # Returns: action types, log-probs, value estimates
+            sampled_type, logp, values = agent.act(obs_tensor)
             
             # Convert neural network outputs to environment-compatible action format
-            actions = make_action_dicts(sampled_type, sampled_params)
+            actions = make_action_dicts(sampled_type)
             
             # Execute actions in the environment
             next_obs, rewards, terminated, truncated, info = env.step(actions)
@@ -188,7 +188,7 @@ def main():
             if len(next_obs) > 0 and not done_flag:
                 with torch.no_grad():
                     next_obs_t = torch.tensor(next_obs, dtype=torch.float32, device=DEVICE)
-                    _, _, _, next_vals_tensor = agent.policy(next_obs_t)
+                    _, next_vals_tensor = agent.policy(next_obs_t)
                     next_values_np = next_vals_tensor.cpu().numpy()
             else:
                 next_values_np = np.array([], dtype=np.float32)
@@ -207,7 +207,6 @@ def main():
                 buffer.add(
                     obs[i].astype(np.float32),                    # Current observation
                     int(sampled_type[i].cpu().numpy()),           # Discrete action type
-                    sampled_params[i].cpu().numpy().astype(np.float32),  # Continuous params
                     float(rewards_arr[i]) if i < len(rewards_arr) else 0.0,  # Reward
                     float(values[i].cpu().numpy()),               # Value estimate
                     float(logp[i].cpu().numpy()),                 # Action log-probability

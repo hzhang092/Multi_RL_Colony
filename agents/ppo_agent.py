@@ -90,8 +90,6 @@ class SharedActorCritic(nn.Module):
             nn.ReLU()
         )
         self.type_head = nn.Linear(hidden, n_types)
-        self.param_mean = nn.Linear(hidden, 1)  # Output mean for grow_frac
-        self.param_logstd = nn.Parameter(torch.ones(1) * -0.5) 
         self.value_head = nn.Linear(hidden, 1)
 
     def forward(self, obs: torch.FloatTensor):
@@ -106,9 +104,9 @@ class SharedActorCritic(nn.Module):
             tuple: A 4-tuple containing:
                 - logits (torch.FloatTensor): Raw logits for discrete action types.
                                             Shape: [batch_size, n_types]
-                - param_mean (torch.FloatTensor): Mean values for continuous parameters.
+                - (Deprecated) param_mean (torch.FloatTensor): Mean values for continuous parameters.
                                                 Shape: [batch_size, 2]
-                - param_std (torch.FloatTensor): Standard deviations for continuous parameters.
+                - (Deprecated) param_std (torch.FloatTensor): Standard deviations for continuous parameters.
                                                Shape: [2] (shared across batch)
                 - value (torch.FloatTensor): State-value estimates.
                                            Shape: [batch_size]
@@ -120,61 +118,36 @@ class SharedActorCritic(nn.Module):
         """
         h = self.encoder(obs)
         logits = self.type_head(h)
-        param_mean = self.param_mean(h)
-        param_std = torch.exp(self.param_logstd)  # Ensure positive std
         value = self.value_head(h).squeeze(-1)
-        return logits, param_mean, param_std, value
+        return logits, value
 
 
 # =====================================================
 # Utilities
 # =====================================================
-def make_action_dicts(type_tensor: torch.Tensor, param_tensor: torch.Tensor):
+def make_action_dicts(type_tensor: torch.Tensor):
     """
-    Convert raw action tensors to environment-compatible action dictionaries.
+    Convert raw action tensors to environment-compatible action format.
     
     This function transforms the raw network outputs into the specific format
-    required by the ColonyEnv. It applies appropriate squashing functions to
-    map continuous parameters to their valid ranges:
-    - grow_frac: sigmoid(raw) → (0, 1)
-    - torque: tanh(raw) → (-1, 1)
+    required by the ColonyEnv. Since growth is now constant, we only need
+    to handle discrete action types.
     
     Args:
         type_tensor (torch.Tensor): Sampled discrete action types.
                                   Shape: [batch_size]
-        param_tensor (torch.Tensor): Raw continuous parameter samples.
-                                    Shape: [batch_size, 2]
     
     Returns:
-        list: List of action dictionaries compatible with ColonyEnv.step().
-              Each dictionary contains:
-              - "type" (int): Discrete action type (0, 1, or 2)
-              - "grow_frac" (np.ndarray): Growth fraction in [0, 1]
-              - "torque" (np.ndarray): Torque value in [-1, 1]
+        list: List of integers representing discrete action types compatible 
+              with ColonyEnv.step().
     
     Example:
         >>> types = torch.tensor([0, 1, 2])
-        >>> params = torch.tensor([[0.5, -0.3], [1.2, 0.8], [-0.1, 0.0]])
-        >>> actions = make_action_dicts(types, params)
-        >>> len(actions)  # 3
-        >>> actions[0]["type"]  # 0
-        >>> actions[0]["grow_frac"]  # np.array([0.622...]) - sigmoid(0.5)
-    
-    Note:
-        This function uses raw (pre-squashed) parameter values in the PPO
-        objective for simplicity, avoiding the complexity of log-Jacobian
-        correction that would be required for proper change of variables.
+        >>> actions = make_action_dicts(types)
+        >>> actions  # [0, 1, 2]
     """
     types = type_tensor.cpu().numpy().astype(int)
-    params = param_tensor.cpu().numpy()
-    actions = []
-    for t, grow_raw in zip(types, params):
-        grow_frac = float(1 / (1 + math.exp(-grow_raw)))  # sigmoid
-        actions.append({
-            "type": int(t),
-            "grow_frac": np.array([grow_frac], dtype=np.float32)
-        })
-    return actions
+    return types.tolist()
 
 
 # =====================================================
@@ -206,18 +179,17 @@ class RolloutBuffer:
         >>> buffer.clear()  # Reset for next rollout
     """
     def __init__(self):
-        self.obs, self.actions_type, self.actions_params = [], [], []
+        self.obs, self.actions_type = [], []
         self.rewards, self.values, self.logp = [], [], []
         self.dones, self.next_values = [], []
 
-    def add(self, obs, a_type, a_param, reward, value, logp, done, next_value):
+    def add(self, obs, a_type, reward, value, logp, done, next_value):
         """
         Add a single transition to the buffer.
         
         Args:
             obs (np.ndarray): Observation at current timestep
             a_type (int): Discrete action type taken
-            a_param (np.ndarray): Raw continuous parameters (shape: [2])
             reward (float): Reward received for this transition
             value (float): Value function estimate for current state
             logp (float): Log-probability of the action taken
@@ -226,7 +198,6 @@ class RolloutBuffer:
         """
         self.obs.append(obs)
         self.actions_type.append(a_type)
-        self.actions_params.append(a_param)
         self.rewards.append(reward)
         self.values.append(value)
         self.logp.append(logp)
@@ -344,8 +315,6 @@ class PPOAgent:
             tuple: A 4-tuple containing:
                 - sampled_type (torch.Tensor): Sampled discrete action types.
                                               Shape: [batch_size]
-                - sampled_params (torch.Tensor): Sampled continuous parameters.
-                                                Shape: [batch_size, 2]
                 - logp (torch.Tensor): Log-probabilities of sampled actions.
                                      Shape: [batch_size]
                 - values (torch.Tensor): Value function estimates.
@@ -356,18 +325,16 @@ class PPOAgent:
             are performed with torch.no_grad() for efficiency.
         """
         with torch.no_grad():
-            logits, param_mean, param_std, values = self.policy(obs_tensor)
+            logits, values = self.policy(obs_tensor)
             probs = torch.softmax(logits, dim=-1)
             dist_type = Categorical(probs)
-            dist_params = Normal(param_mean, param_std)
 
             sampled_type = dist_type.sample()
-            sampled_params = dist_params.sample()
-            logp = dist_type.log_prob(sampled_type) + dist_params.log_prob(sampled_params).sum(dim=-1)
+            logp = dist_type.log_prob(sampled_type)
 
-        return sampled_type, sampled_params, logp, values
+        return sampled_type, logp, values
 
-    def evaluate_actions(self, obs, types, params):
+    def evaluate_actions(self, obs, types):
         """
         Evaluate actions under the current policy for PPO updates.
         
@@ -378,12 +345,11 @@ class PPOAgent:
         Args:
             obs (torch.Tensor): Batch of observations. Shape: [batch_size, obs_dim]
             types (torch.Tensor): Discrete action types to evaluate. Shape: [batch_size]
-            params (torch.Tensor): Continuous parameters to evaluate. Shape: [batch_size, 2]
         
         Returns:
             tuple: A 3-tuple containing:
-                - total_logp (torch.Tensor): Total log-probabilities of the actions.
-                                            Shape: [batch_size]
+                - logp (torch.Tensor): Log-probabilities of the actions.
+                                     Shape: [batch_size]
                 - values_pred (torch.Tensor): Current value function estimates.
                                              Shape: [batch_size]
                 - entropy (torch.Tensor): Policy entropy (scalar)
@@ -392,16 +358,13 @@ class PPOAgent:
             This method is used during PPO updates to compute the ratio between
             current and old policy probabilities for the clipped objective.
         """
-        logits, param_mean, param_std, values_pred = self.policy(obs)
+        logits, values_pred = self.policy(obs)
         dist_type = Categorical(torch.softmax(logits, dim=-1))
-        dist_params = Normal(param_mean, param_std)
 
-        logp_type = dist_type.log_prob(types)
-        logp_params = dist_params.log_prob(params).sum(dim=-1)
-        entropy = dist_type.entropy().mean() + dist_params.entropy().sum(dim=-1).mean()
+        logp = dist_type.log_prob(types)
+        entropy = dist_type.entropy().mean()
 
-        total_logp = logp_type + logp_params
-        return total_logp, values_pred, entropy
+        return logp, values_pred, entropy
 
     def ppo_update(self, buffer, epochs, batch_size, gamma, lam):
         """
@@ -440,7 +403,6 @@ class PPOAgent:
 
         obs_tensor = torch.tensor(np.array(buffer.obs), dtype=torch.float32, device=self.device)
         types_tensor = torch.tensor(np.array(buffer.actions_type), dtype=torch.int64, device=self.device)
-        params_tensor = torch.tensor(np.array(buffer.actions_params), dtype=torch.float32, device=self.device)
         old_logp_tensor = torch.tensor(np.array(buffer.logp), dtype=torch.float32, device=self.device)
         returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self.device)
         advs_tensor = torch.tensor(advs, dtype=torch.float32, device=self.device)
@@ -455,10 +417,10 @@ class PPOAgent:
             idx = np.random.permutation(n)
             for start in range(0, n, batch_size):
                 batch_idx = idx[start:start + batch_size]
-                obs_b, types_b, params_b = obs_tensor[batch_idx], types_tensor[batch_idx], params_tensor[batch_idx]
+                obs_b, types_b = obs_tensor[batch_idx], types_tensor[batch_idx]
                 old_logp_b, returns_b, adv_b, vals_b = old_logp_tensor[batch_idx], returns_tensor[batch_idx], advs_tensor[batch_idx], values_tensor[batch_idx]
 
-                logp, values_pred, entropy = self.evaluate_actions(obs_b, types_b, params_b)
+                logp, values_pred, entropy = self.evaluate_actions(obs_b, types_b)
 
                 ratio = torch.exp(logp - old_logp_b)
                 surr1 = ratio * adv_b
