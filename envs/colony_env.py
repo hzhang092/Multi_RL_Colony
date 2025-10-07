@@ -306,7 +306,11 @@ class ColonyEnv(gym.Env):
         #  - pressure_proxy: averaged inverse distance to neighbors
         #  - orientation: cell angle (radians)
         obs_dim = 4
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+        # Element-wise bounds for normalized features:
+        # [rel_length (0..1), local_density (0..1), pressure_proxy (0..1), orientation (-1..1)]
+        low = np.array([0.0, 0.0, 0.0, -1.0], dtype=np.float32)
+        high = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        self.observation_space = spaces.Box(low=low, high=high, shape=(obs_dim,), dtype=np.float32)
 
         # Define the target morphology for the reward function.
         self.M_target = {"AR": 0.7, "D": 0.9, "F": np.zeros(self.fourier_K)}  # target morphology metrics
@@ -423,31 +427,35 @@ class ColonyEnv(gym.Env):
         mask[idx] = False
         neighbor_dists = dists[mask]
 
-        # 1) Relative length
+        # 1) Relative length (normalized to [0,1])
         rel_length = float(cell.length / max(self.L_divide, 1e-9))
+        rel_length = float(np.clip(rel_length, 0.0, 1.0))
 
-        # 2) Local density (Gaussian kernel smoothing)
+        # 2) Local density (Gaussian kernel smoothing, normalized to [0,1])
         # Use sigma proportional to division length for locality
         if neighbor_dists.size > 0:
             sigma = max(0.25 * self.L_divide, 1e-6)
             weights = np.exp(-0.5 * (neighbor_dists / sigma) ** 2)
-            local_density = float(np.sum(weights))
+            # Normalize by K_nn (expected local neighborhood size), then clip
+            local_density = float(np.clip(np.sum(weights) / max(self.K_nn, 1), 0.0, 1.0))
         else:
             local_density = 0.0
 
-        # 3) Pressure proxy: mean inverse distance to neighbors within a cutoff
+        # 3) Pressure proxy (normalized to [0,1]): mean inverse distance to neighbors within a cutoff
         if neighbor_dists.size > 0:
             cutoff = 2.0 * self.L_divide
             near = neighbor_dists[neighbor_dists <= cutoff] if cutoff > 0 else neighbor_dists
             if near.size > 0:
-                pressure_proxy = float(np.mean(1.0 / (near + 1e-6)))
+                inv_mean = float(np.mean(1.0 / (near + 1e-6)))
+                # Scale by a reference distance (L_divide) to form a dimensionless quantity and clip
+                pressure_proxy = float(np.clip(inv_mean * self.L_divide, 0.0, 1.0))
             else:
                 pressure_proxy = 0.0
         else:
             pressure_proxy = 0.0
 
-        # 4) Orientation (raw angle)
-        orientation = float(cell.theta)
+        # 4) Orientation (normalized to [-1,1]) using sin(theta) for wrap-around stability
+        orientation = float(math.sin(cell.theta))
 
         return np.array([rel_length, local_density, pressure_proxy, orientation], dtype=np.float32)
 
