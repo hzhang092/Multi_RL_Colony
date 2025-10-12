@@ -312,16 +312,18 @@ class ColonyEnv(gym.Env):
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
         self.action_space = spaces.Discrete(3)  # 0: dormant, 1: grow, 2: divide
-        # Observation per cell (4 features):
-        #  - rel_length: current length / division length
-        #  - local_density: smoothed local crowding via Gaussian kernel
-        #  - pressure_proxy: averaged inverse distance to neighbors
-        #  - orientation: cell angle (radians)
-        obs_dim = 4
+        
+        # Observation per cell (6 features):
+        #- Internal state variables: 
+        #    - length, age, orientation (sin, cos)
+        #- Relational features
+        #    - local_density: smoothed local crowding using a Gaussian kernel
+        #    - pressure_proxy: averaged inverse distance to neighbors
+        obs_dim = 6
         # Element-wise bounds for normalized features:
-        # [rel_length (0..1), local_density (0..1), pressure_proxy (0..1), orientation (-1..1)]
-        low = np.array([0.0, 0.0, 0.0, -1.0], dtype=np.float32)
-        high = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        # [rel_length (0..1.25), rel_age (0..1), orientation_sin(0..1), orientation_cos(0..1), local_density (0..1), pressure_proxy (0..1)]
+        low = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        high = np.array([1.25, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
         self.observation_space = spaces.Box(low=low, high=high, shape=(obs_dim,), dtype=np.float32)
 
         # Define the target morphology for the reward function.
@@ -414,7 +416,7 @@ class ColonyEnv(gym.Env):
         Gathers observations for all cells in the colony.
         observations include:
         - Internal state variables: 
-            - length, orientation, age
+            - length, age, orientation (sin, cos)
         - Relational features
             - local_density: smoothed local crowding using a Gaussian kernel
             - pressure_proxy: averaged inverse distance to neighbors
@@ -429,8 +431,11 @@ class ColonyEnv(gym.Env):
 
     def _obs_for_cell(self, idx, centers):
         """
-        Compute observation for a single cell with 4 features:
+        Compute observation for a single cell with 6 features:
         - rel_length: current length / division length
+        - rel_age: current age / max age
+        - orientation_sin: sin(theta)
+        - orientation_cos: cos(theta)
         - local_density: smoothed local crowding using a Gaussian kernel
         - pressure_proxy: averaged inverse distance to neighbors
         """
@@ -443,9 +448,9 @@ class ColonyEnv(gym.Env):
         # length, age, theta
         rel_length = float(np.clip((cell.length - self.L_init)/(self.L_divide - self.L_init), 0.0, 1.25))
         rel_age = float(np.clip(cell.age / self.max_steps, 0.0, 1.0))
-        # Orientation (normalized to [-1,1]) using sin(theta) for wrap-around stability
-        orientation_sin = float(np.sin(cell.theta))
-        orientation_cos = float(np.cos(cell.theta))
+        # Orientation (normalized to [0,1]) using sin(theta) for wrap-around stability
+        orientation_sin = float(np.clip(np.sin(cell.theta), 0.0, 1.0))
+        orientation_cos = float(np.clip(np.cos(cell.theta), 0.0, 1.0))
 
         # ----- relational features -----
         # Exclude self (distance ~ 0) for neighbor-based metrics
@@ -453,11 +458,7 @@ class ColonyEnv(gym.Env):
         mask[idx] = False
         neighbor_dists = dists[mask]
 
-        # 1) Relative length (normalized to [0,1])
-        #rel_length = float(cell.length / max(self.L_divide, 1e-9))
-        #rel_length = float(np.clip(rel_length, 0.0, 1.0))
-
-        # 2) Local density (Gaussian kernel smoothing, normalized to [0,1])
+        # 1) Local density (Gaussian kernel smoothing, normalized to [0,1])
         # Use sigma proportional to division length for locality
         if neighbor_dists.size > 0:
             sigma = max(0.25 * self.L_divide, 1e-6)
@@ -467,7 +468,7 @@ class ColonyEnv(gym.Env):
         else:
             local_density = 0.0
 
-        # 3) Pressure proxy (normalized to [0,1]): mean inverse distance to neighbors within a cutoff
+        # 2) Pressure proxy (normalized to [0,1]): mean inverse distance to neighbors within a cutoff
         if neighbor_dists.size > 0:
             cutoff = 2.0 * self.L_divide
             near = neighbor_dists[neighbor_dists <= cutoff] if cutoff > 0 else neighbor_dists
