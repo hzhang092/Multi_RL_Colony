@@ -93,7 +93,7 @@ def run_evaluation(checkpoint_path: str,
                   env_seed: int = 686,
                   figsize: tuple = (8, 8)):
     """
-    Run a single rollout of the trained PPO agent with visualization.
+    Run a single rollout of the trained/untrained PPO agent with visualization.
     
     Args:
         checkpoint_path (str): Path to the trained model checkpoint
@@ -154,17 +154,15 @@ def run_evaluation(checkpoint_path: str,
         with torch.no_grad():
             if deterministic:
                 # Use deterministic (greedy) actions
-                logits, param_mean, param_std, values = agent.policy(obs_tensor)
-                print(f"Logits: {logits}, Param Mean: {param_mean}, Param Std: {param_std}, Values: {values}")
+                logits, values = agent.policy(obs_tensor)
                 probs = torch.softmax(logits, dim=-1)
                 sampled_type = torch.argmax(probs, dim=-1)
-                sampled_params = param_mean  # Use mean instead of sampling
             else:
                 # Use stochastic sampling (as during training)
-                sampled_type, sampled_params, logp, values = agent.act(obs_tensor)
+                sampled_type, logp, values = agent.act(obs_tensor)
         
         # Convert to environment-compatible actions
-        actions = make_action_dicts(sampled_type, sampled_params)
+        actions = make_action_dicts(sampled_type)
         
         # Step the environment
         next_obs, rewards, terminated, truncated, info = env.step(actions)
@@ -212,13 +210,17 @@ def run_evaluation(checkpoint_path: str,
                 # Continue without rendering for this step
         
         # Print progress
-        if step % 20 == 0 or step < 10:
+        if step % 10 == 0 or step < 10:
             print(f"Step {step:3d} | Cells: {len(obs):2d} | "
                   f"Step Reward: {step_reward:6.3f} | "
                   f"Total Reward: {total_reward:6.3f}")
         
         # Check if episode ended
         if terminated or truncated:
+            # Final step printout
+            print(f"Step {step:3d} | Cells: {len(obs):2d} | "
+                  f"Step Reward: {step_reward:6.3f} | "
+                  f"Total Reward: {total_reward:6.3f}")
             print(f"\nEpisode ended at step {step}")
             if terminated:
                 print("Reason: Environment terminated (goal reached or failure)")
@@ -333,7 +335,7 @@ def main():
     # Determine checkpoint path
     if args.checkpoint is None:
         try:
-            checkpoint_path = find_latest_checkpoint("ppo_checkpoints_original")
+            checkpoint_path = find_latest_checkpoint("ppo_checkpoints")
             print(f"🔍 Using latest checkpoint: {checkpoint_path}")
         except FileNotFoundError as e:
             print(f"❌ Error: {e}")
