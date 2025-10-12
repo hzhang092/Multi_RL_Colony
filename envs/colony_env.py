@@ -288,14 +288,25 @@ class ColonyEnv(gym.Env):
             seed (Optional[int]): A seed for the random number generator.
         """
         super().__init__()
+        # ---------- Environment parameters ----------
         self.world_size = np.array(world_size, dtype=float)
+        self.max_cells = max_cells
+        
+        # ----------- Cell parameters ----------
         self.L_init = L_init # initial length of the first cell
         self.L_divide = L_divide
         self.K_nn = K_nn
-        self.max_cells = max_cells
+        self.growth_rate = 0.25
+        
         self.fourier_K = fourier_K
         self.rng = np.random.default_rng(seed)
-        self.dt = 1.0
+        self.dt = 1.0 # step duration
+        
+        # ---------- Reward parameters ----------
+        self.r1_div_len = 0.1  # Reward for reaching division length
+        self.r2_div_success = 1.0 # Reward for successful division
+        self.r_grow = 0.01 # Small reward for growing
+        self.r_invalid_div = -0.1 # Penalty for invalid division attempt
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
@@ -363,7 +374,7 @@ class ColonyEnv(gym.Env):
         for cell, a in zip(self.cells, actions_per_agent):
             cell.age += self.dt
             if a == 1: # grow
-                cell.length += 0.1 * self.dt
+                cell.length += self.growth_rate * self.dt
             elif a == 2: # divide
                 if cell.length >= self.L_divide:
                     cell.pending_divide = True
@@ -400,9 +411,17 @@ class ColonyEnv(gym.Env):
     def _gather_obs(self):
         """
         Gathers observations for all cells in the colony.
+        observations include:
+        - Internal state variables: 
+            - length, orientation, age
+        - Relational features
+            - rel_length: current length / division length
+            - local_density: smoothed local crowding using a Gaussian kernel
+            - pressure_proxy: averaged inverse distance to neighbors
+            - orientation: cell angle in radians
 
         Returns:
-            np.ndarray: An array of observations, one row per cell.
+            np.ndarray: An 2d array of observations, one row per cell.
         """
         if not self.cells:
             return np.array([])
@@ -457,7 +476,7 @@ class ColonyEnv(gym.Env):
         # 4) Orientation (normalized to [-1,1]) using sin(theta) for wrap-around stability
         orientation = float(math.sin(cell.theta))
 
-        return np.array([rel_length, local_density, pressure_proxy, orientation], dtype=np.float32)
+        return np.array([cell.length, cell.age, cell.theta, rel_length, local_density, pressure_proxy, orientation], dtype=np.float32)
 
     def _relax_positions(self, max_iters=12):
         """
@@ -513,6 +532,7 @@ class ColonyEnv(gym.Env):
             return np.zeros(N)
         
         # --- Global morphology calculation ---
+        """
         all_endpoints = np.vstack([c.endpoints() for c in self.cells])
         hull_pts = monotone_chain_convex_hull(all_endpoints)
         
@@ -539,6 +559,9 @@ class ColonyEnv(gym.Env):
         # Global reward is inverse of error (higher is better)
         w_AR, w_D, w_F = 1.0, 1.0, 0.5
         global_reward = 1.0 / (1.0 + w_AR*err_AR + w_D*err_D + w_F*err_F)
+        """        
+        # Simplified global reward based on number of cells (encourages growth)
+        global_reward = min(N / self.max_cells, 1.0)
         
         # --- Per-agent rewards ---
         rewards = np.full(N, global_reward)
@@ -611,6 +634,7 @@ class ColonyEnv(gym.Env):
         ax.set_title(f"Colony Simulation — {len(self.cells)} cells | t={self.t}")
 
         # Draw convex hull of all endpoints (gives a sense of colony outline)
+        '''
         if len(self.cells) >= 2:
             try:
                 all_endpoints = np.vstack([c.endpoints() for c in self.cells])
@@ -621,7 +645,8 @@ class ColonyEnv(gym.Env):
             except Exception:
                 # Hull calculation can fail in degenerate cases; ignore
                 pass
-
+        '''
+        
         # Prepare segments for efficient drawing with LineCollection
         segments = []
         colors = []
