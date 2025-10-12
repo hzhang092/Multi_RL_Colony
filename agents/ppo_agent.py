@@ -89,8 +89,22 @@ class SharedActorCritic(nn.Module):
             nn.Linear(hidden, hidden),
             nn.ReLU()
         )
-        self.type_head = nn.Linear(hidden, n_types)
-        self.value_head = nn.Linear(hidden, 1)
+        #self.type_head = nn.Linear(hidden, n_types)
+        #self.value_head = nn.Linear(hidden, 1)
+        
+        # Actor head: small nonlinear projection before logits
+        self.actor_head = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, n_types)
+        )
+
+        # Critic head: small nonlinear projection before scalar value
+        self.critic_head = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, 1)
+        )
 
     def forward(self, obs: torch.FloatTensor):
         """
@@ -117,8 +131,8 @@ class SharedActorCritic(nn.Module):
             are constrained to be positive through exponentiation.
         """
         h = self.encoder(obs)
-        logits = self.type_head(h)
-        value = self.value_head(h).squeeze(-1)
+        logits = self.actor_head(h)
+        value = self.critic_head(h).squeeze(-1)
         return logits, value
 
 
@@ -203,9 +217,29 @@ class RolloutBuffer:
         self.logp.append(logp)
         self.dones.append(done)
         self.next_values.append(next_value)
+        
+    def add_batch(self, obs_batch, a_type_batch, reward_batch, value_batch, logp_batch, done_batch, next_value_batch):
+        """
+        Add a batch of transitions.
+        Each input should be an iterable with the same length.
+        """
+        self.obs.extend(obs_batch)
+        self.actions_type.extend(a_type_batch)
+        self.rewards.extend(reward_batch)
+        self.values.extend(value_batch)
+        self.logp.extend(logp_batch)
+        self.dones.extend(done_batch)
+        self.next_values.extend(next_value_batch)
 
     def clear(self):
-        self.__init__()
+        #self.__init__()
+        self.obs.clear()
+        self.actions_type.clear()
+        self.rewards.clear()
+        self.values.clear()
+        self.logp.clear()
+        self.dones.clear()
+        self.next_values.clear()
 
 
 def compute_gae_advantages(rewards, values, next_values, dones, gamma=0.99, lam=0.95):
@@ -334,7 +368,7 @@ class PPOAgent:
 
         return sampled_type, logp, values
 
-    def evaluate_actions(self, obs, types):
+    def evaluate_actions(self, obs, types, with_grad: bool = True):
         """
         Evaluate actions under the current policy for PPO updates.
         
@@ -345,6 +379,9 @@ class PPOAgent:
         Args:
             obs (torch.Tensor): Batch of observations. Shape: [batch_size, obs_dim]
             types (torch.Tensor): Discrete action types to evaluate. Shape: [batch_size]
+            with_grad (bool, optional): Whether to compute gradients.
+                usage:  Training step / PPO update (backprop): with_grad=True
+                        Logging or rollout evaluation (no backprop): with_grad=False
         
         Returns:
             tuple: A 3-tuple containing:
@@ -358,6 +395,15 @@ class PPOAgent:
             This method is used during PPO updates to compute the ratio between
             current and old policy probabilities for the clipped objective.
         """
+        if not with_grad:
+            with torch.no_grad():
+                logits, values_pred = self.policy(obs)
+                dist_type = torch.distributions.Categorical(logits=logits)
+                logp = dist_type.log_prob(types)
+                entropy = dist_type.entropy().mean()
+                return logp, values_pred, entropy
+        
+        
         logits, values_pred = self.policy(obs)
         dist_type = Categorical(torch.softmax(logits, dim=-1))
 
@@ -447,7 +493,8 @@ class PPOAgent:
         return {
             "policy_loss": np.mean(all_policy_loss),
             "value_loss": np.mean(all_value_loss),
-            "entropy": np.mean(all_entropy)
+            "entropy": np.mean(all_entropy),
+            "avg_return": np.mean(returns)
         }
 
 

@@ -197,22 +197,29 @@ def main():
             # Each agent's experience is stored as a separate transition
             # Note: Number of agents can change between timesteps due to reproduction/death
             N_agents_current = len(values)  # Number of agents that took actions
+            next_values_batch = []
             for i in range(N_agents_current):
                 # Get next value for this agent (0.0 if episode done or agent index out of bounds)
-                if done_flag:
-                    next_value = 0.0
+                if done_flag or i >= len(next_values_np):
+                    next_values_batch.append(0.0)
                 else:
-                    next_value = float(next_values_np[i]) if i < len(next_values_np) else 0.0
-                    
-                buffer.add(
-                    obs[i].astype(np.float32),                    # Current observation
-                    int(sampled_type[i].cpu().numpy()),           # Discrete action type
-                    float(rewards_arr[i]) if i < len(rewards_arr) else 0.0,  # Reward
-                    float(values[i].cpu().numpy()),               # Value estimate
-                    float(logp[i].cpu().numpy()),                 # Action log-probability
-                    done_flag,                                     # Episode termination
-                    next_value                                     # Next state value
-                )
+                    next_values_batch.append(float(next_values_np[i]))
+                
+            obs_batch = [o.astype(np.float32) for o in obs]
+            action_type_batch = sampled_type.cpu().numpy().astype(int).tolist()
+            rewards_batch = rewards_arr[:len(obs_batch)].tolist()
+            values_batch = values.cpu().numpy().tolist()
+            logp_batch = logp.cpu().numpy().tolist()
+            done_flag_batch = [done_flag] * len(obs_batch)
+            
+            buffer.add_batch(obs_batch, 
+                             action_type_batch, 
+                             rewards_batch,
+                             values_batch, 
+                             logp_batch, 
+                             done_flag_batch,
+                             next_values_batch)
+            
             
             # Update state and counters
             obs = next_obs
@@ -248,12 +255,13 @@ def main():
                   f"Steps: {total_steps:6d} | "
                   f"Transitions: {num_transitions:5d} | "
                   f"Time: {elapsed_time:6.1f}s | "
-                  f"Reward: {avg_reward:6.3f} | "
-                  f"Cells: {avg_num_cells:4d} | "
+                  f"AVG Reward: {avg_reward:6.3f} | "
+                  f"AVG Num Cells: {avg_num_cells:4d} | "
                   f"P_Loss: {train_stats['policy_loss']:.3f} | "
                   f"V_Loss: {train_stats['value_loss']:.3f} | "
-                  f"Entropy: {train_stats['entropy']:.3f}")
-            
+                  f"Entropy: {train_stats['entropy']:.3f} | "
+                  f"Avg_Return: {train_stats['avg_return']:.3f}")
+
             # Track best performance
             if avg_reward > best_reward:
                 best_reward = avg_reward
