@@ -291,6 +291,7 @@ class ColonyEnv(gym.Env):
         # ---------- Environment parameters ----------
         self.world_size = np.array(world_size, dtype=float)
         self.max_cells = max_cells
+        self.max_steps = 150
         
         # ----------- Cell parameters ----------
         self.L_init = L_init # initial length of the first cell
@@ -415,10 +416,8 @@ class ColonyEnv(gym.Env):
         - Internal state variables: 
             - length, orientation, age
         - Relational features
-            - rel_length: current length / division length
             - local_density: smoothed local crowding using a Gaussian kernel
             - pressure_proxy: averaged inverse distance to neighbors
-            - orientation: cell angle in radians
 
         Returns:
             np.ndarray: An 2d array of observations, one row per cell.
@@ -434,21 +433,29 @@ class ColonyEnv(gym.Env):
         - rel_length: current length / division length
         - local_density: smoothed local crowding using a Gaussian kernel
         - pressure_proxy: averaged inverse distance to neighbors
-        - orientation: cell angle in radians
         """
         cell = self.cells[idx]
         # Distances to all cells
         diffs = centers - cell.pos
         dists = np.linalg.norm(diffs, axis=1)
+        
+        # ----- internal state features -----
+        # length, age, theta
+        rel_length = float(np.clip((cell.length - self.L_init)/(self.L_divide - self.L_init), 0.0, 1.25))
+        rel_age = float(np.clip(cell.age / self.max_steps, 0.0, 1.0))
+        # Orientation (normalized to [-1,1]) using sin(theta) for wrap-around stability
+        orientation_sin = float(np.sin(cell.theta))
+        orientation_cos = float(np.cos(cell.theta))
 
+        # ----- relational features -----
         # Exclude self (distance ~ 0) for neighbor-based metrics
         mask = np.ones(len(dists), dtype=bool)
         mask[idx] = False
         neighbor_dists = dists[mask]
 
         # 1) Relative length (normalized to [0,1])
-        rel_length = float(cell.length / max(self.L_divide, 1e-9))
-        rel_length = float(np.clip(rel_length, 0.0, 1.0))
+        #rel_length = float(cell.length / max(self.L_divide, 1e-9))
+        #rel_length = float(np.clip(rel_length, 0.0, 1.0))
 
         # 2) Local density (Gaussian kernel smoothing, normalized to [0,1])
         # Use sigma proportional to division length for locality
@@ -473,10 +480,7 @@ class ColonyEnv(gym.Env):
         else:
             pressure_proxy = 0.0
 
-        # 4) Orientation (normalized to [-1,1]) using sin(theta) for wrap-around stability
-        orientation = float(math.sin(cell.theta))
-
-        return np.array([cell.length, cell.age, cell.theta, rel_length, local_density, pressure_proxy, orientation], dtype=np.float32)
+        return np.array([rel_length, rel_age, orientation_sin, orientation_cos, local_density, pressure_proxy], dtype=np.float32)
 
     def _relax_positions(self, max_iters=12):
         """
