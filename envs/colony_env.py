@@ -304,10 +304,10 @@ class ColonyEnv(gym.Env):
         self.dt = 1.0 # step duration
         
         # ---------- Reward parameters ----------
-        self.r1_div_len = 0.1  # Reward for reaching division length
-        self.r2_div_success = 1.0 # Reward for successful division
         self.r_grow = 0.01 # Small reward for growing
-        self.r_invalid_div = -0.1 # Penalty for invalid division attempt
+        self.r_div_len = 0.1  # Reward for reaching division length
+        self.r_div_success = 1.0 # Reward for successful division
+        self.r_invalid_div = -0.2 # Penalty for invalid division attempt
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
@@ -322,7 +322,7 @@ class ColonyEnv(gym.Env):
         obs_dim = 6
         # Element-wise bounds for normalized features:
         # [rel_length (0..1.25), rel_age (0..1), orientation_sin(0..1), orientation_cos(0..1), local_density (0..1), pressure_proxy (0..1)]
-        low = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        low = np.array([0.0, 0.0, -1.0, -1.0, 0.0, 0.0], dtype=np.float32)
         high = np.array([1.25, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
         self.observation_space = spaces.Box(low=low, high=high, shape=(obs_dim,), dtype=np.float32)
 
@@ -349,7 +349,6 @@ class ColonyEnv(gym.Env):
         cx, cy = 0.5 * self.world_size # Start in the center
         first = StickCell(pos=np.array([cx, cy], dtype=float), theta=0.0, length=self.L_init)
         self.cells: List[StickCell] = [first]
-        self._recent_divisions = {}  # Track divisions for reward calculation
         obs = self._gather_obs()
         return obs, {} # empty info
 
@@ -373,22 +372,32 @@ class ColonyEnv(gym.Env):
         # actions_per_agent must be a list aligned with self.cells
         if len(actions_per_agent) != len(self.cells):
             raise ValueError("Number of actions must match number of cells.")
+
+        # initialize individual rewards
+        rewards_for_acted_cells = np.zeros(len(self.cells), dtype=float)
+        
         # apply actions (rotation, growth, mark division)
-        for cell, a in zip(self.cells, actions_per_agent):
+        for i, (cell, a) in enumerate(zip(self.cells, actions_per_agent)):
             cell.age += self.dt
             if a == 1: # grow
                 cell.length += self.growth_rate * self.dt
+                rewards_for_acted_cells[i] += self.r_grow
             elif a == 2: # divide
                 if cell.length >= self.L_divide:
                     cell.pending_divide = True
-        # relax overlaps
-        self._relax_positions(max_iters=12)
+                    rewards_for_acted_cells[i] += self.r_div_success
+                else:
+                    # Penalize the parent for an invalid action
+                    rewards_for_acted_cells[i] += self.r_invalid_div
+                    
         # handle divisions
         new_cells = []
         remaining_cells = []
-        for cell in self.cells:
+        survivor_indices_from_original_list = [] # indices of cells that did not divide
+        for i, cell in enumerate(self.cells):
             if not cell.pending_divide:
                 remaining_cells.append(cell)
+                survivor_indices_from_original_list.append(i)
                 continue
             # Divide the cell
             jitter = self.rng.normal(0, 0.1)
@@ -396,20 +405,28 @@ class ColonyEnv(gym.Env):
             offset_dist = L_new / 2.0
             offset = offset_dist * np.array([math.cos(cell.theta), math.sin(cell.theta)])
             
-            c1 = StickCell(pos=cell.pos + offset, theta=cell.theta + jitter, length=L_new, just_divided=True)
-            c2 = StickCell(pos=cell.pos - offset, theta=cell.theta - jitter, length=L_new, just_divided=True)
-            new_cells.extend([c1, c2])
-            self._recent_divisions[id(c1)] = self.t
-            self._recent_divisions[id(c2)] = self.t
+            c1 = StickCell(pos=cell.pos + offset, theta=cell.theta + jitter, length=L_new)
+            c2 = StickCell(pos=cell.pos - offset, theta=cell.theta - jitter, length=L_new)
+            new_cells.extend([c1, c2])            
         self.cells = remaining_cells + new_cells
+        
+        # relax overlaps
+        self._relax_positions(max_iters=12)
         # time marches on
         self.t += 1
         # gather observations, rewards, and check for termination
         obs = self._gather_obs()
-        rewards = self._compute_rewards()
+        final_rewards = self._compute_rewards(rewards_for_acted_cells)
         terminated, truncated = self._check_done()
-        info = {"n_cells": len(self.cells)}
-        return obs, rewards, terminated, truncated, info
+        info = {"n_cells": len(self.cells),
+                "survivor_indices": survivor_indices_from_original_list}
+        # The RL framework will receive observations for the new agents and rewards for the new agents.
+        # note that the length of obs (and cells) may differ from final_rewards due to divisions.
+        # The framework's training loop is responsible for mapping the parent's reward (which is now gone)
+        # to its original trajectory. Most libraries handle this automatically.
+        # len(final_rewards) == len(self.cells) before division
+        # len(obs) == len(self.cells) after division
+        return obs, final_rewards, terminated, truncated, info
 
     def _gather_obs(self):
         """
@@ -449,8 +466,8 @@ class ColonyEnv(gym.Env):
         rel_length = float(np.clip((cell.length - self.L_init)/(self.L_divide - self.L_init), 0.0, 1.25))
         rel_age = float(np.clip(cell.age / self.max_steps, 0.0, 1.0))
         # Orientation (normalized to [0,1]) using sin(theta) for wrap-around stability
-        orientation_sin = float(np.clip(np.sin(cell.theta), 0.0, 1.0))
-        orientation_cos = float(np.clip(np.cos(cell.theta), 0.0, 1.0))
+        orientation_sin = float(np.sin(cell.theta))
+        orientation_cos = float(np.cos(cell.theta)) 
 
         # ----- relational features -----
         # Exclude self (distance ~ 0) for neighbor-based metrics
@@ -519,9 +536,9 @@ class ColonyEnv(gym.Env):
                         c1.pos -= push
                         c2.pos += push
 
-    def _compute_rewards(self):
+    def _compute_rewards(self, rewards_for_acted):
         """
-        Computes rewards for all cells based on the colony's morphology.
+        Computes rewards for all acted cells based on the colony's morphology.
 
         The reward has several components:
         - A global reward based on how well the colony's shape matches target
@@ -568,19 +585,12 @@ class ColonyEnv(gym.Env):
         # Simplified global reward based on number of cells (encourages growth)
         global_reward = min(N / self.max_cells, 1.0)
         
-        # --- Per-agent rewards ---
-        rewards = np.full(N, global_reward)
-        
-        # Small penalty for existing (encourages faster growth/division)
-        rewards -= 0.01
-        
-        # Bonus for recent divisions
-        for i, cell in enumerate(self.cells):
-            if cell.just_divided:
-                rewards[i] += 0.5
-                cell.just_divided = False # Reset flag
-                
-        return rewards
+        rewards_for_acted += global_reward
+
+        # Optional: Small penalty for existing (cost of living).
+        rewards_for_acted -= 0.001
+
+        return rewards_for_acted
 
     def _check_done(self):
         """

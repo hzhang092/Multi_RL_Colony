@@ -176,6 +176,7 @@ def main():
             actions = make_action_dicts(sampled_type)
             
             # Execute actions in the environment
+            # now len(rewards) == number of agents that acted == len(actions)
             next_obs, rewards, terminated, truncated, info = env.step(actions)
             done_flag = bool(terminated or truncated)
             
@@ -184,41 +185,43 @@ def main():
             episode_rewards.extend(rewards)  # Collect for logging
             num_cells.append(info["n_cells"])
             
+            num_survivors = 0
+            survivor_indices = []
+            next_values_np = np.array([], dtype=np.float32)
             # Compute next state values for GAE bootstrap (if episode continues)
             if len(next_obs) > 0 and not done_flag:
                 with torch.no_grad():
                     next_obs_t = torch.tensor(next_obs, dtype=torch.float32, device=DEVICE)
                     _, next_vals_tensor = agent.policy(next_obs_t)
                     next_values_np = next_vals_tensor.cpu().numpy()
-            else:
-                next_values_np = np.array([], dtype=np.float32)
+
+                # save survivor indices (cells that did not divide) for mapping next values
+                survivor_indices = info.get("survivor_indices", [])
+                num_survivors = len(survivor_indices)
             
             # Store transitions in experience buffer
             # Each agent's experience is stored as a separate transition
             # Note: Number of agents can change between timesteps due to reproduction/death
-            N_agents_current = len(values)  # Number of agents that took actions
-            next_values_batch = []
-            for i in range(N_agents_current):
-                # Get next value for this agent (0.0 if episode done or agent index out of bounds)
-                if done_flag or i >= len(next_values_np):
-                    next_values_batch.append(0.0)
-                else:
-                    next_values_batch.append(float(next_values_np[i]))
-                
+            N_agents_acted = len(obs)  # Number of agents that took actions
+            next_values_for_acting_agents = np.zeros(N_agents_acted, dtype=np.float32)
+            
+            if num_survivors > 0:
+                next_values_for_acting_agents[survivor_indices] = next_values_np[:num_survivors]
+
             obs_batch = [o.astype(np.float32) for o in obs]
             action_type_batch = sampled_type.cpu().numpy().astype(int).tolist()
-            rewards_batch = rewards_arr[:len(obs_batch)].tolist()
-            values_batch = values.cpu().numpy().tolist()
+            rewards_batch = rewards_arr.tolist()
+            values_batch = values.cpu().numpy().flatten().tolist()
             logp_batch = logp.cpu().numpy().tolist()
             done_flag_batch = [done_flag] * len(obs_batch)
-            
-            buffer.add_batch(obs_batch, 
-                             action_type_batch, 
+
+            buffer.add_batch(obs_batch,
+                             action_type_batch,
                              rewards_batch,
                              values_batch, 
                              logp_batch, 
                              done_flag_batch,
-                             next_values_batch)
+                             next_values_for_acting_agents.tolist())
             
             
             # Update state and counters
@@ -229,6 +232,8 @@ def main():
             # Reset environment if episode ended
             if done_flag:
                 obs, _ = env.reset()
+                num_survivors = 0  # Reset survivor count for next episode
+                
         
         # =====================================================
         # Policy Update Phase
