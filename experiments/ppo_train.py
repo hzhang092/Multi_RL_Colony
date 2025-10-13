@@ -157,12 +157,18 @@ def main():
     # Main Training Loop
     # =====================================================
     for update in range(1, NUM_UPDATES + 1):
+        # Reset environment at the start of each update
+        obs, _ = env.reset()
+        terminated, truncated = False, False
+        num_survivors = 0  # Track number of surviving agents
+        
         # =====================================================
         # Experience Collection Phase
         # =====================================================
         collected_steps = 0
         episode_rewards = []  # Track rewards for logging
         num_cells = []
+        action_history = []
         
         while collected_steps < STEPS_PER_UPDATE:
             # Convert observations to tensors for neural network processing
@@ -179,6 +185,9 @@ def main():
             # now len(rewards) == number of agents that acted == len(actions)
             next_obs, rewards, terminated, truncated, info = env.step(actions)
             done_flag = bool(terminated or truncated)
+
+            # Store action history
+            action_history.extend(sampled_type.cpu().numpy().tolist())
             
             # Process rewards and prepare for storage
             rewards_arr = np.asarray(rewards, dtype=np.float32)
@@ -255,6 +264,7 @@ def main():
             avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
             avg_num_cells = int(np.mean(num_cells)) if num_cells else 0
             max_num_cells = int(np.max(num_cells)) if num_cells else 0
+            action_tuple = (np.sum(np.array(action_history) == 0), np.sum(np.array(action_history) == 1), np.sum(np.array(action_history) == 2))
             
             print(f"Update {update:4d}/{NUM_UPDATES} | "
                   f"Steps: {total_steps:6d} | "
@@ -265,7 +275,8 @@ def main():
                   f"P_Loss: {train_stats['policy_loss']:.3f} | "
                   f"V_Loss: {train_stats['value_loss']:.3f} | "
                   f"Entropy: {train_stats['entropy']:.3f} | "
-                  f"Avg_Return: {train_stats['avg_return']:.3f}")
+                  f"Avg_Return: {train_stats['avg_return']:.3f} | "
+                  f"avg actions: {action_tuple}")
 
             # Track best performance
             if avg_reward > best_reward:

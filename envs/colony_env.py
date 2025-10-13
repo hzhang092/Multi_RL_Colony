@@ -304,10 +304,10 @@ class ColonyEnv(gym.Env):
         self.dt = 1.0 # step duration
         
         # ---------- Reward parameters ----------
-        self.r_grow = 0.01 # Small reward for growing
-        self.r_div_len = 0.1  # Reward for reaching division length
+        self.r_grow = 0.005 # Small reward for growing
+        self.r_div_len = 0.05  # Reward for reaching division length
         self.r_div_success = 1.0 # Reward for successful division
-        self.r_invalid_div = -0.2 # Penalty for invalid division attempt
+        self.r_invalid_div = -0.00002 # Penalty for invalid division attempt
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
@@ -380,8 +380,13 @@ class ColonyEnv(gym.Env):
         for i, (cell, a) in enumerate(zip(self.cells, actions_per_agent)):
             cell.age += self.dt
             if a == 1: # grow
+                old_length = cell.length
                 cell.length += self.growth_rate * self.dt
                 rewards_for_acted_cells[i] += self.r_grow
+                # Bonus for reaching division length
+                if old_length < self.L_divide <= cell.length:
+                    rewards_for_acted_cells[i] += self.r_div_len  # Small bonus for reaching readiness
+                    
             elif a == 2: # divide
                 if cell.length >= self.L_divide:
                     cell.pending_divide = True
