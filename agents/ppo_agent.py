@@ -360,8 +360,9 @@ class PPOAgent:
         """
         with torch.no_grad():
             logits, values = self.policy(obs_tensor)
-            probs = torch.softmax(logits, dim=-1)
-            dist_type = Categorical(probs)
+            #probs = torch.softmax(logits, dim=-1)
+            #dist_type = Categorical(probs)
+            dist_type = Categorical(logits=logits)
 
             sampled_type = dist_type.sample()
             logp = dist_type.log_prob(sampled_type)
@@ -405,7 +406,8 @@ class PPOAgent:
         
         
         logits, values_pred = self.policy(obs)
-        dist_type = Categorical(torch.softmax(logits, dim=-1))
+        #dist_type = Categorical(torch.softmax(logits, dim=-1))
+        dist_type = Categorical(logits=logits)
 
         logp = dist_type.log_prob(types)
         entropy = dist_type.entropy().mean()
