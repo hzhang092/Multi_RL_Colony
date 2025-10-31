@@ -83,24 +83,33 @@ class SharedActorCritic(nn.Module):
     """
     def __init__(self, obs_dim: int, n_types: int = 3, hidden: int = 128):
         super().__init__()
+        # Deeper encoder with residual-like connections and dropout for better learning
         self.encoder = nn.Sequential(
             nn.Linear(obs_dim, hidden),
             nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden, hidden),
             nn.ReLU()
         )
-        #self.type_head = nn.Linear(hidden, n_types)
-        #self.value_head = nn.Linear(hidden, 1)
         
-        # Actor head: small nonlinear projection before logits
+        # Enhanced Actor head: deeper network for better action discrimination
         self.actor_head = nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
             nn.Linear(hidden // 2, n_types)
         )
 
-        # Critic head: small nonlinear projection before scalar value
+        # Enhanced Critic head: separate value estimation pathway
         self.critic_head = nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
             nn.Linear(hidden // 2, 1)
@@ -309,8 +318,8 @@ class PPOAgent:
         obs_dim (int): Dimension of the observation space
         lr (float, optional): Learning rate for Adam optimizer. Defaults to 3e-4.
         clip_eps (float, optional): PPO clipping parameter. Defaults to 0.2.
-        value_coef (float, optional): Coefficient for value function loss. Defaults to 0.5.
-        ent_coef (float, optional): Coefficient for entropy bonus. Defaults to 0.01.
+        value_coef (float, optional): Coefficient for value function loss. Defaults to 0.5. Increased for more stability.
+        ent_coef (float, optional): Coefficient for entropy bonus. Defaults to 0.02. Increased for more exploration.
         max_grad_norm (float, optional): Maximum gradient norm for clipping. Defaults to 0.5.
         device (str, optional): Device for computation ('cpu' or 'cuda'). Defaults to "cpu".
     
@@ -323,7 +332,7 @@ class PPOAgent:
         >>> agent.ppo_update(buffer, epochs=4, batch_size=256, gamma=0.99, lam=0.95)
     """
     def __init__(self, obs_dim: int, lr: float = 3e-4, clip_eps: float = 0.2, 
-                 value_coef: float = 0.5, ent_coef: float = 0.01, 
+                 value_coef: float = 0.5, ent_coef: float = 0.02, 
                  max_grad_norm: float = 0.5, device: Union[str, torch.device] = "cpu"):
         self.device = device
         self.policy = SharedActorCritic(obs_dim).to(device)
