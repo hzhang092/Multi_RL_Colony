@@ -182,6 +182,7 @@ def fourier_descriptor_from_boundary(boundary_pts: np.ndarray, K=8):
 
 
  # main idea: https://github.com/ingallslab/bsim-related/blob/main/bsim_related/data_processing/cell_data_processing.py#L184
+
 def get_local_anisotropy(
     cell_centers: np.ndarray,
     cell_orientations: np.ndarray,
