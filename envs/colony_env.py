@@ -32,184 +32,16 @@ from gymnasium import spaces
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.patches import Polygon
+from .utilities.geo_helpers import (
+    seg_seg_closest_points,
+    unit_vector,
+    monotone_chain_convex_hull,
+    polygon_area,
+    pca_aspect_ratio,
+    fourier_descriptor_from_boundary,
+)
 
 # ---------- Geometry helpers (self-contained) ----------
-def seg_seg_closest_points(a0, a1, b0, b1):
-    """
-    Calculates the closest points between two line segments in 2D or 3D.
-
-    This is a standard algorithm to find the minimum distance between two finite
-    lines. It's used here to detect the distance between the central axes of
-    two capsule cells for collision detection.
-
-    Args:
-        a0 (np.ndarray): Start point of segment A.
-        a1 (np.ndarray): End point of segment A.
-        b0 (np.ndarray): Start point of segment B.
-        b1 (np.ndarray): End point of segment B.
-
-    Returns:
-        Tuple[np.ndarray, np.ndarray, float]:
-            - Pa: The point on segment A closest to segment B.
-            - Pb: The point on segment B closest to segment A.
-            - distance: The Euclidean distance between Pa and Pb.
-    """
-    A = a1 - a0
-    B = b1 - b0
-    C = a0 - b0
-    a = np.dot(A, A)
-    b = np.dot(A, B)
-    c = np.dot(B, B)
-    d = np.dot(A, C)
-    e = np.dot(B, C)
-    denom = a*c - b*b
-    s = 0.0
-    t = 0.0
-    eps = 1e-9
-    if denom > eps:
-        s = (b*e - c*d) / denom
-        s = np.clip(s, 0.0, 1.0)
-    else:
-        s = 0.0
-    t = (b*s + e) / c if c > eps else 0.0
-    if t < 0.0:
-        t = 0.0
-        s = np.clip(-d / a if a>eps else 0.0, 0.0, 1.0)
-    elif t > 1.0:
-        t = 1.0
-        s = np.clip((b - d) / a if a>eps else 0.0, 0.0, 1.0)
-    Pa = a0 + A * s
-    Pb = b0 + B * t
-    diff = Pa - Pb
-    dist2 = np.dot(diff, diff)
-    return Pa, Pb, math.sqrt(max(dist2, 0.0))
-
-def unit_vector(v):
-    """
-    Computes the unit vector of a given vector.
-
-    Args:
-        v (np.ndarray): The input vector.
-
-    Returns:
-        np.ndarray: The unit vector. Returns a default vector [1, 0] if the
-                    input vector has a near-zero norm.
-    """
-    n = np.linalg.norm(v)
-    if n < 1e-9:
-        return np.array([1.0, 0.0])
-    return v / n
-
-def monotone_chain_convex_hull(points: np.ndarray) -> np.ndarray:
-    """
-    Computes the convex hull of a set of 2D points using Andrew's monotone
-    chain algorithm.
-
-    This is used to find the outer boundary of the entire colony.
-
-    Args:
-        points (np.ndarray): An array of shape (N, 2) of 2D points.
-
-    Returns:
-        np.ndarray: An array of points representing the convex hull, ordered
-                    counter-clockwise.
-    """
-    pts = sorted([tuple(p) for p in points])
-    if len(pts) <= 1:
-        return np.array(pts)
-    lower = []
-    for p in pts:
-        while len(lower) >= 2:
-            q1 = np.array(lower[-2]); q2 = np.array(lower[-1]); q3 = np.array(p)
-            if np.cross(q2 - q1, q3 - q2) <= 0:
-                lower.pop()
-            else:
-                break
-        lower.append(p)
-    upper = []
-    for p in reversed(pts):
-        while len(upper) >= 2:
-            q1 = np.array(upper[-2]); q2 = np.array(upper[-1]); q3 = np.array(p)
-            if np.cross(q2 - q1, q3 - q2) <= 0:
-                upper.pop()
-            else:
-                break
-        upper.append(p)
-    hull = lower[:-1] + upper[:-1]
-    return np.array(hull)
-
-def polygon_area(points: np.ndarray) -> float:
-    """
-    Calculates the area of a polygon using the shoelace formula.
-
-    Used to compute the area of the colony's convex hull.
-
-    Args:
-        points (np.ndarray): An array of shape (N, 2) of polygon vertices,
-                             ordered clockwise or counter-clockwise.
-
-    Returns:
-        float: The area of the polygon.
-    """
-    if len(points) < 3:
-        return 0.0
-    x = points[:,0]; y = points[:,1]
-    return 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
-
-def pca_aspect_ratio(points: np.ndarray) -> float:
-    """
-    Calculates the aspect ratio of a point cloud via Principal Component Analysis.
-
-    The aspect ratio is the ratio of the largest eigenvalue to the second-largest
-    eigenvalue of the covariance matrix of the points. This measures the
-    elongation of the colony.
-
-    Args:
-        points (np.ndarray): An array of shape (N, 2) of points.
-
-    Returns:
-        float: The aspect ratio (>= 1.0).
-    """
-    if len(points) < 2:
-        return 1.0
-    mean = points.mean(axis=0)
-    X = points - mean
-    cov = np.cov(X.T)
-    vals = np.linalg.eigvalsh(cov)
-    vals = np.flip(np.sort(vals))
-    if vals[1] <= 1e-9:
-        return float(vals[0] / (vals[1] + 1e-9))
-    return float(max(vals[0] / max(vals[1], 1e-9), 1.0))
-
-def fourier_descriptor_from_boundary(boundary_pts: np.ndarray, K=8):
-    """
-    Computes scale-invariant Fourier descriptors from a set of boundary points.
-
-    These descriptors capture the shape of the colony's boundary in the
-    frequency domain, providing a quantitative measure of its morphology.
-
-    Args:
-        boundary_pts (np.ndarray): An array of shape (N, 2) of ordered points
-                                   on the boundary.
-        K (int): The number of Fourier descriptors to return.
-
-    Returns:
-        np.ndarray: A vector of K Fourier descriptors.
-    """
-    if len(boundary_pts) == 0:
-        return np.zeros(K)
-    # Convert 2D points to a 1D complex signal
-    z = boundary_pts[:,0] + 1j * boundary_pts[:,1]
-    # Compute the Fast Fourier Transform
-    Z = np.fft.fft(z)
-    mags = np.abs(Z)
-    # Normalize by the magnitude of the DC component (Z[0]) to achieve
-    # scale invariance.
-    mags0 = mags[0] if mags[0] > 1e-9 else 1.0
-    descriptor = []
-    for k in range(1, K+1):
-        descriptor.append((mags[k] / mags0) if k < len(mags) else 0.0)
-    return np.array(descriptor)
 
 # ---------- Stick cell ----------
 @dataclass
@@ -305,9 +137,12 @@ class ColonyEnv(gym.Env):
         
         # ---------- Reward parameters ----------
         self.r_grow = 0.005 # Small reward for growing
-        self.r_div_len = 0.05  # Reward for reaching division length
-        self.r_div_success = 1.0 # Reward for successful division
-        self.r_invalid_div = -0.00002 # Penalty for invalid division attempt
+        self.r_div_len = 0.2  # Reward for reaching division length (increased)
+        self.r_div_success = 3.0 # Reward for successful division (increased)
+        self.p_invalid_div = 0 # Small penalty for invalid division attempt (added penalty)
+        self.p_living = -0.0001 # small penalty per timestep to encourage faster growth
+        self.p_too_long = -0.005 # penalty for cells that grow too long (to discourage endless growth)
+        self.r_colony_size = 1.1 # weight for colony size in global reward
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
@@ -375,6 +210,7 @@ class ColonyEnv(gym.Env):
 
         # initialize individual rewards
         rewards_for_acted_cells = np.zeros(len(self.cells), dtype=float)
+        rewards_for_acted_cells += self.p_living # small living penalty to encourage faster growth
         
         # apply actions (rotation, growth, mark division)
         for i, (cell, a) in enumerate(zip(self.cells, actions_per_agent)):
@@ -382,10 +218,13 @@ class ColonyEnv(gym.Env):
             if a == 1: # grow
                 old_length = cell.length
                 cell.length += self.growth_rate * self.dt
-                rewards_for_acted_cells[i] += self.r_grow
+                #rewards_for_acted_cells[i] += self.r_grow
                 # Bonus for reaching division length
                 if old_length < self.L_divide <= cell.length:
                     rewards_for_acted_cells[i] += self.r_div_len  # Small bonus for reaching readiness
+                # Penalty for growing too long
+                if cell.length >= 1.2 * self.L_divide:
+                    rewards_for_acted_cells[i] += self.p_too_long
                     
             elif a == 2: # divide
                 if cell.length >= self.L_divide:
@@ -393,7 +232,7 @@ class ColonyEnv(gym.Env):
                     rewards_for_acted_cells[i] += self.r_div_success
                 else:
                     # Penalize the parent for an invalid action
-                    rewards_for_acted_cells[i] += self.r_invalid_div
+                    rewards_for_acted_cells[i] += self.p_invalid_div
                     
         # handle divisions
         new_cells = []
@@ -589,8 +428,7 @@ class ColonyEnv(gym.Env):
         """        
         # Simplified global reward based on number of cells (encourages growth)
         global_reward = min(N / self.max_cells, 1.0)
-        
-        rewards_for_acted += global_reward
+        rewards_for_acted += global_reward * self.r_colony_size
 
         # Optional: Small penalty for existing (cost of living).
         rewards_for_acted -= 0.001
@@ -624,10 +462,10 @@ class ColonyEnv(gym.Env):
         if mode not in ("human", "rgb_array"):
             raise ValueError("mode must be 'human' or 'rgb_array'")
 
-        # Initialize persistent figure/axes once
-        if not hasattr(self, "fig") or self.fig is None or not hasattr(self, "ax"):
-            self.fig, self.ax = plt.subplots(figsize=figsize)
-            if mode == "human":
+        # Initialize persistent figure/axes once, separately for human vs rgb_array
+        if mode == "human":
+            if not hasattr(self, "fig") or self.fig is None or not hasattr(self, "ax"):
+                self.fig, self.ax = plt.subplots(figsize=figsize)
                 try:
                     plt.ion()
                     mgr = getattr(self.fig.canvas, "manager", None)
@@ -636,12 +474,32 @@ class ColonyEnv(gym.Env):
                 except Exception:
                     # Backend might not support window title; safe to ignore
                     pass
-
-        ax = self.ax
+            fig = self.fig
+            ax = self.ax
+            if ax is None:
+                ax = fig.add_subplot(111)
+                self.ax = ax
+        else:
+            # Offscreen figure for rgb_array mode to avoid popping a window
+            if not hasattr(self, "_rgb_fig") or self._rgb_fig is None or not hasattr(self, "_rgb_ax"):
+                try:
+                    from matplotlib.figure import Figure
+                    from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+                    self._rgb_fig = Figure(figsize=figsize)
+                    self._rgb_ax = self._rgb_fig.add_subplot(111)
+                    FigureCanvas(self._rgb_fig)  # bind Agg canvas
+                except Exception:
+                    # Fallback to a non-shown pyplot figure if Agg is unavailable
+                    self._rgb_fig, self._rgb_ax = plt.subplots(figsize=figsize)
+            fig = self._rgb_fig
+            ax = self._rgb_ax
+        # Defensive: ensure axes exists before drawing
         if ax is None:
-            # Create an axes if missing (defensive guard for atypical backends)
-            ax = self.fig.add_subplot(111)
-            self.ax = ax
+            ax = fig.add_subplot(111)
+            if mode == "human":
+                self.ax = ax
+            else:
+                self._rgb_ax = ax
         ax.clear()
 
         # World bounds and styling
@@ -716,15 +574,15 @@ class ColonyEnv(gym.Env):
 
         if mode == "human":
             # Draw and briefly pause to update the interactive window
-            self.fig.canvas.draw_idle()
+            fig.canvas.draw_idle()
             plt.pause(1.0 / max(self.metadata.get("render_fps", 4), 1))
             return None
 
         # rgb_array: return the pixel buffer
-        self.fig.canvas.draw()
-        w, h = self.fig.canvas.get_width_height()
+        fig.canvas.draw()
+        w, h = fig.canvas.get_width_height()
         # Attempt RGB via getattr to appease static analyzers and support multiple backends
-        to_rgb = getattr(self.fig.canvas, "tostring_rgb", None)
+        to_rgb = getattr(fig.canvas, "tostring_rgb", None)
         if callable(to_rgb):
             try:
                 rgb_obj = to_rgb()
@@ -745,7 +603,7 @@ class ColonyEnv(gym.Env):
                 pass
         # Try RGBA buffer and strip alpha
         rgba_bytes = None
-        buffer_rgba = getattr(self.fig.canvas, "buffer_rgba", None)
+        buffer_rgba = getattr(fig.canvas, "buffer_rgba", None)
         if callable(buffer_rgba):
             try:
                 rgba_obj = buffer_rgba()
@@ -756,7 +614,7 @@ class ColonyEnv(gym.Env):
         if rgba_bytes is None:
             # Try renderer-based access as a fallback (Agg backends)
             try:
-                renderer = getattr(self.fig.canvas, "get_renderer", None)
+                renderer = getattr(fig.canvas, "get_renderer", None)
                 if callable(renderer):
                     r = renderer()
                     rb = getattr(r, "buffer_rgba", None)
@@ -789,3 +647,7 @@ class ColonyEnv(gym.Env):
             plt.close(self.fig)
             self.fig = None
             self.ax = None
+        if hasattr(self, '_rgb_fig') and self._rgb_fig is not None:
+            plt.close(self._rgb_fig)
+            self._rgb_fig = None
+            self._rgb_ax = None
