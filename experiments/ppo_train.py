@@ -106,7 +106,7 @@ LOG_FILE = LOG_DIR / f"ppo_train_{time.strftime('%Y%m%d-%H%M%S')}.txt"
 
 logger = logging.getLogger("ppo_train")
 logger.setLevel(logging.INFO)
-_fmt = logging.Formatter('%(asctime)s | %(message)s')
+_fmt = logging.Formatter('%(message)s')
 _fh = logging.FileHandler(LOG_FILE, mode='w', encoding='utf-8')
 _fh.setFormatter(_fmt)
 _sh = logging.StreamHandler(sys.stdout)
@@ -140,7 +140,8 @@ def main():
         RuntimeError: If environment or agent initialization fails
         KeyboardInterrupt: Training can be safely interrupted and resumed from checkpoints
     """
-    logger.info(f"Starting PPO training on device: {DEVICE}")
+    start_ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    logger.info(f"[{start_ts}] Starting PPO training on device: {DEVICE}")
     logger.info("Training configuration:")
     logger.info(f"  - Updates: {NUM_UPDATES}")
     logger.info(f"  - Steps per update: {STEPS_PER_UPDATE}")
@@ -172,6 +173,8 @@ def main():
     # Training tracking variables
     total_steps = 0
     start_time = time.time()
+    # For reporting time spent in the last 10 updates block
+    last_log_time = start_time
     best_reward = float('-inf')
     
     logger.info("Starting training loop...")
@@ -308,10 +311,13 @@ def main():
         # Logging and Checkpointing
         # =====================================================
         if update % 10 == 0:
-            elapsed_time = time.time() - start_time
+            # Time for the last 10 updates (since previous 10-update log)
+            elapsed_time = time.time() - last_log_time
             avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
             avg_num_cells = int(np.mean(num_cells)) if num_cells else 0
             max_num_cells = int(np.max(num_cells)) if num_cells else 0
+            median_num_cells = int(np.median(num_cells)) if num_cells else 0
+            std_num_cells = int(np.std(num_cells)) if num_cells else 0
             action_tuple = (np.sum(np.array(action_history) == 0), np.sum(np.array(action_history) == 1), np.sum(np.array(action_history) == 2))
             
             logger.info(
@@ -321,12 +327,17 @@ def main():
                 f"Time: {elapsed_time:6.1f}s | "
                 f"AVG Reward: {avg_reward:6.3f} | "
                 f"AVG Num Cells: {avg_num_cells:4d} | "
+                f"MAX Num Cells: {max_num_cells:4d} | "
+                f"MED Num Cells: {median_num_cells:4d} | "
+                f"STD Num Cells: {std_num_cells:4d} | "
                 f"P_Loss: {train_stats['policy_loss']:.3f} | "
                 f"V_Loss: {train_stats['value_loss']:.3f} | "
                 f"Entropy: {train_stats['entropy']:.3f} | "
                 f"Avg_Return: {train_stats['avg_return']:.3f} | "
                 f"avg actions: {action_tuple}"
             )
+            # Reset timer baseline for next 10 updates
+            last_log_time = time.time()
 
             # Track best performance
             if avg_reward > best_reward:
@@ -359,7 +370,8 @@ def main():
     # =====================================================
     final_time = time.time() - start_time
     logger.info("" + "="*50)
-    logger.info("Training completed successfully!")
+    end_ts = time.strftime('%Y-%m-%d %H:%M:%S')
+    logger.info(f"[{end_ts}] Training completed successfully!")
     logger.info(f"Total training time: {final_time:.1f} seconds ({final_time/3600:.2f} hours)")
     logger.info(f"Total environment steps: {total_steps:,}")
     logger.info(f"Best average reward achieved: {best_reward:.3f}")
@@ -392,8 +404,10 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        logger.info("\nTraining interrupted by user. Checkpoints are saved in ppo_checkpoints/")
+        stop_ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        logger.info(f"[{stop_ts}] Training interrupted by user. Checkpoints are saved in ppo_checkpoints/")
     except Exception as e:
-        logger.exception(f"\nTraining failed with error: {e}")
+        stop_ts = time.strftime('%Y-%m-%d %H:%M:%S')
+        logger.exception(f"[{stop_ts}] Training failed with error: {e}")
         logger.info("Check logs and configuration. Partial checkpoints may be available.")
         raise
