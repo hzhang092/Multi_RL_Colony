@@ -86,8 +86,12 @@ PPO_EPOCHS = 4                 # Number of optimization epochs per collected bat
 MINIBATCH_SIZE = 1024          # Batch size for gradient updates
                                # Should be <= total transitions per update
 
+# Optimizer and loss weighting
+LR = 3e-4                      # Learning rate for PPO optimizer
+VALUE_COEF = 0.5               # Critic loss coefficient (higher → stronger value fitting)
+
 # Advantage estimation parameters
-GAMMA = 0.9                   # Discount factor for future rewards
+GAMMA = 0.99                   # Discount factor for future rewards
 LAM = 0.95                     # GAE lambda parameter (bias-variance tradeoff)
 
 # Checkpointing configuration
@@ -139,7 +143,7 @@ def main():
     print(f"Environment initialized with observation dimension: {obs_dim}")
     
     # Initialize PPO agent with shared policy
-    agent = PPOAgent(obs_dim=obs_dim, device=DEVICE)
+    agent = PPOAgent(obs_dim=obs_dim, device=DEVICE, lr=LR, value_coef=VALUE_COEF)
     print(f"PPO agent initialized with {sum(p.numel() for p in agent.policy.parameters()):,} parameters")
     
     # Initialize experience buffer
@@ -207,16 +211,40 @@ def main():
                 # save survivor indices (cells that did not divide) for mapping next values
                 survivor_indices = info.get("survivor_indices", [])
                 num_survivors = len(survivor_indices)
+
+            # Build next_values for GAE:
+            # - Start with baseline = parent's current value (neutral w.r.t dividing)
+            # - For survivors: use actual next-state values from next_obs
+            # - For dividing parents: blend avg child value with parent value to encourage correct division
+            N_agents_acted = len(obs)  # Number of agents that took actions
+            parent_values_np = values.cpu().numpy().flatten().astype(np.float32)
+            next_values_for_acting_agents = parent_values_np.copy()
+
+            if len(next_obs) > 0 and not done_flag and next_values_np.size > 0:
+                # Assign survivors' next values (next_obs ordering: [survivors..., children...])
+                if num_survivors > 0:
+                    next_values_for_acting_agents[survivor_indices] = next_values_np[:num_survivors].astype(np.float32)
+
+                # For dividing parents, use a blended estimate based on average child value
+                child_values_np = next_values_np[num_survivors:] if next_values_np.size > num_survivors else np.array([], dtype=np.float32)
+                dividing_parents = [i for i in range(N_agents_acted) if i not in survivor_indices]
+
+                if len(dividing_parents) > 0:
+                    if child_values_np.size > 0:
+                        avg_child_value = float(np.mean(child_values_np))
+                    else:
+                        # Fallback: average over all next values if children slice is empty
+                        avg_child_value = float(np.mean(next_values_np)) if next_values_np.size > 0 else 0.0
+
+                    blend = 0.8  # weight for child value vs parent value (tunable 0.7–0.9)
+                    for idx_parent in dividing_parents:
+                        parent_val = next_values_for_acting_agents[idx_parent]
+                        next_values_for_acting_agents[idx_parent] = (
+                            blend * avg_child_value + (1.0 - blend) * float(parent_val)
+                        )
             
             # Store transitions in experience buffer
             # Each agent's experience is stored as a separate transition
-            # Note: Number of agents can change between timesteps due to reproduction/death
-            N_agents_acted = len(obs)  # Number of agents that took actions
-            next_values_for_acting_agents = np.zeros(N_agents_acted, dtype=np.float32)
-            
-            if num_survivors > 0:
-                next_values_for_acting_agents[survivor_indices] = next_values_np[:num_survivors]
-
             obs_batch = [o.astype(np.float32) for o in obs]
             action_type_batch = sampled_type.cpu().numpy().astype(int).tolist()
             rewards_batch = rewards_arr.tolist()
@@ -296,7 +324,9 @@ def main():
                     'gamma': GAMMA,
                     'lam': LAM,
                     'ppo_epochs': PPO_EPOCHS,
-                    'minibatch_size': MINIBATCH_SIZE
+                    'minibatch_size': MINIBATCH_SIZE,
+                    'lr': LR,
+                    'value_coef': VALUE_COEF
                 }
             }
             torch.save(checkpoint, ckpt_path)
@@ -326,7 +356,9 @@ def main():
             'gamma': GAMMA,
             'lam': LAM,
             'ppo_epochs': PPO_EPOCHS,
-            'minibatch_size': MINIBATCH_SIZE
+            'minibatch_size': MINIBATCH_SIZE,
+            'lr': LR,
+            'value_coef': VALUE_COEF
         }
     }
     torch.save(final_checkpoint, final_ckpt)
