@@ -54,6 +54,7 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 import time
+import logging
 import numpy as np
 import torch
 from pathlib import Path
@@ -98,6 +99,22 @@ LAM = 0.95                     # GAE lambda parameter (bias-variance tradeoff)
 SAVE_DIR = Path("ppo_checkpoints")
 SAVE_DIR.mkdir(exist_ok=True)
 
+# Logging configuration (writes to console and a timestamped .txt file)
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / f"ppo_train_{time.strftime('%Y%m%d-%H%M%S')}.txt"
+
+logger = logging.getLogger("ppo_train")
+logger.setLevel(logging.INFO)
+_fmt = logging.Formatter('%(asctime)s | %(message)s')
+_fh = logging.FileHandler(LOG_FILE, mode='w', encoding='utf-8')
+_fh.setFormatter(_fmt)
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setFormatter(_fmt)
+logger.handlers.clear()
+logger.addHandler(_fh)
+logger.addHandler(_sh)
+
 # ---------------- Training Loop ----------------
 def main():
     """
@@ -123,16 +140,19 @@ def main():
         RuntimeError: If environment or agent initialization fails
         KeyboardInterrupt: Training can be safely interrupted and resumed from checkpoints
     """
-    print(f"Starting PPO training on device: {DEVICE}")
-    print(f"Training configuration:")
-    print(f"  - Updates: {NUM_UPDATES}")
-    print(f"  - Steps per update: {STEPS_PER_UPDATE}")
-    print(f"  - Total training steps: {NUM_UPDATES * STEPS_PER_UPDATE:,}")
-    print(f"  - PPO epochs: {PPO_EPOCHS}")
-    print(f"  - Minibatch size: {MINIBATCH_SIZE}")
-    print(f"  - Discount factor (gamma): {GAMMA}")
-    print(f"  - GAE lambda: {LAM}")
-    print("" + "="*50)
+    logger.info(f"Starting PPO training on device: {DEVICE}")
+    logger.info("Training configuration:")
+    logger.info(f"  - Updates: {NUM_UPDATES}")
+    logger.info(f"  - Steps per update: {STEPS_PER_UPDATE}")
+    logger.info(f"  - Total training steps: {NUM_UPDATES * STEPS_PER_UPDATE:,}")
+    logger.info(f"  - PPO epochs: {PPO_EPOCHS}")
+    logger.info(f"  - Minibatch size: {MINIBATCH_SIZE}")
+    logger.info(f"  - Discount factor (gamma): {GAMMA}")
+    logger.info(f"  - GAE lambda: {LAM}")
+    logger.info(f"  - Learning rate: {LR}")
+    logger.info(f"  - Value coefficient: {VALUE_COEF}")
+    logger.info(f"  - Log file: {LOG_FILE}")
+    logger.info("" + "="*50)
     
     # =====================================================
     # Environment and Agent Initialization
@@ -140,11 +160,11 @@ def main():
     env = ColonyEnv(seed=ENV_SEED)
     obs, _ = env.reset()
     obs_dim = obs.shape[1]  # Observation dimension per agent
-    print(f"Environment initialized with observation dimension: {obs_dim}")
+    logger.info(f"Environment initialized with observation dimension: {obs_dim}")
     
     # Initialize PPO agent with shared policy
     agent = PPOAgent(obs_dim=obs_dim, device=DEVICE, lr=LR, value_coef=VALUE_COEF)
-    print(f"PPO agent initialized with {sum(p.numel() for p in agent.policy.parameters()):,} parameters")
+    logger.info(f"PPO agent initialized with {sum(p.numel() for p in agent.policy.parameters()):,} parameters")
     
     # Initialize experience buffer
     buffer = RolloutBuffer()
@@ -154,8 +174,8 @@ def main():
     start_time = time.time()
     best_reward = float('-inf')
     
-    print("Starting training loop...")
-    print("" + "="*50)
+    logger.info("Starting training loop...")
+    logger.info("" + "="*50)
 
     # =====================================================
     # Main Training Loop
@@ -294,17 +314,19 @@ def main():
             max_num_cells = int(np.max(num_cells)) if num_cells else 0
             action_tuple = (np.sum(np.array(action_history) == 0), np.sum(np.array(action_history) == 1), np.sum(np.array(action_history) == 2))
             
-            print(f"Update {update:4d}/{NUM_UPDATES} | "
-                  f"Steps: {total_steps:6d} | "
-                  f"Transitions: {num_transitions:5d} | "
-                  f"Time: {elapsed_time:6.1f}s | "
-                  f"AVG Reward: {avg_reward:6.3f} | "
-                  f"AVG Num Cells: {avg_num_cells:4d} | "
-                  f"P_Loss: {train_stats['policy_loss']:.3f} | "
-                  f"V_Loss: {train_stats['value_loss']:.3f} | "
-                  f"Entropy: {train_stats['entropy']:.3f} | "
-                  f"Avg_Return: {train_stats['avg_return']:.3f} | "
-                  f"avg actions: {action_tuple}")
+            logger.info(
+                f"Update {update:4d}/{NUM_UPDATES} | "
+                f"Steps: {total_steps:6d} | "
+                f"Transitions: {num_transitions:5d} | "
+                f"Time: {elapsed_time:6.1f}s | "
+                f"AVG Reward: {avg_reward:6.3f} | "
+                f"AVG Num Cells: {avg_num_cells:4d} | "
+                f"P_Loss: {train_stats['policy_loss']:.3f} | "
+                f"V_Loss: {train_stats['value_loss']:.3f} | "
+                f"Entropy: {train_stats['entropy']:.3f} | "
+                f"Avg_Return: {train_stats['avg_return']:.3f} | "
+                f"avg actions: {action_tuple}"
+            )
 
             # Track best performance
             if avg_reward > best_reward:
@@ -330,17 +352,17 @@ def main():
                 }
             }
             torch.save(checkpoint, ckpt_path)
-            print(f"Checkpoint saved: {ckpt_path}")
+            logger.info(f"Checkpoint saved: {ckpt_path}")
 
     # =====================================================
     # Training Completion
     # =====================================================
     final_time = time.time() - start_time
-    print("" + "="*50)
-    print("Training completed successfully!")
-    print(f"Total training time: {final_time:.1f} seconds ({final_time/3600:.2f} hours)")
-    print(f"Total environment steps: {total_steps:,}")
-    print(f"Best average reward achieved: {best_reward:.3f}")
+    logger.info("" + "="*50)
+    logger.info("Training completed successfully!")
+    logger.info(f"Total training time: {final_time:.1f} seconds ({final_time/3600:.2f} hours)")
+    logger.info(f"Total environment steps: {total_steps:,}")
+    logger.info(f"Best average reward achieved: {best_reward:.3f}")
     
     # Save final model
     final_ckpt = SAVE_DIR / "ppo_colony_final.pt"
@@ -362,16 +384,16 @@ def main():
         }
     }
     torch.save(final_checkpoint, final_ckpt)
-    print(f"Final model saved: {final_ckpt}")
-    print("" + "="*50)
+    logger.info(f"Final model saved: {final_ckpt}")
+    logger.info("" + "="*50)
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nTraining interrupted by user. Checkpoints are saved in ppo_checkpoints/")
+        logger.info("\nTraining interrupted by user. Checkpoints are saved in ppo_checkpoints/")
     except Exception as e:
-        print(f"\nTraining failed with error: {e}")
-        print("Check logs and configuration. Partial checkpoints may be available.")
+        logger.exception(f"\nTraining failed with error: {e}")
+        logger.info("Check logs and configuration. Partial checkpoints may be available.")
         raise
