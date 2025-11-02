@@ -129,7 +129,7 @@ class ColonyEnv(gym.Env):
         self.L_init = L_init # initial length of the first cell
         self.L_divide = L_divide
         self.K_nn = K_nn
-        self.growth_rate = 0.25
+        self.growth_rate = 0.5
         
         self.fourier_K = fourier_K
         self.rng = np.random.default_rng(seed)
@@ -139,10 +139,10 @@ class ColonyEnv(gym.Env):
         self.r_grow = 0.005 # Small reward for growing
         self.r_div_len = 0.2  # Reward for reaching division length (increased)
         self.r_div_success = 3.0 # Reward for successful division (increased)
-        self.p_invalid_div = 0 # Small penalty for invalid division attempt (added penalty)
+        self.p_invalid_div = -0.001 # Small penalty for invalid division attempt (added penalty)
         self.p_living = -0.0001 # small penalty per timestep to encourage faster growth
-        self.p_too_long = -0.005 # penalty for cells that grow too long (to discourage endless growth)
-        self.r_colony_size = 1.1 # weight for colony size in global reward
+        self.p_too_long = 0 #-0.005 # penalty for cells that grow too long (to discourage endless growth)
+        self.r_colony_size = 2 # weight for colony size in global reward
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
@@ -204,6 +204,7 @@ class ColonyEnv(gym.Env):
                 - info: A dictionary with auxiliary information.
         """
         actions_per_agent = action
+        invalid_divisions = 0
         # actions_per_agent must be a list aligned with self.cells
         if len(actions_per_agent) != len(self.cells):
             raise ValueError("Number of actions must match number of cells.")
@@ -218,7 +219,7 @@ class ColonyEnv(gym.Env):
             if a == 1: # grow
                 old_length = cell.length
                 cell.length += self.growth_rate * self.dt
-                #rewards_for_acted_cells[i] += self.r_grow
+                rewards_for_acted_cells[i] += self.r_grow
                 # Bonus for reaching division length
                 if old_length < self.L_divide <= cell.length:
                     rewards_for_acted_cells[i] += self.r_div_len  # Small bonus for reaching readiness
@@ -233,6 +234,7 @@ class ColonyEnv(gym.Env):
                 else:
                     # Penalize the parent for an invalid action
                     rewards_for_acted_cells[i] += self.p_invalid_div
+                    invalid_divisions += 1
                     
         # handle divisions
         new_cells = []
@@ -263,7 +265,8 @@ class ColonyEnv(gym.Env):
         final_rewards = self._compute_rewards(rewards_for_acted_cells)
         terminated, truncated = self._check_done()
         info = {"n_cells": len(self.cells),
-                "survivor_indices": survivor_indices_from_original_list}
+                "survivor_indices": survivor_indices_from_original_list,
+                "invalid_divisions": invalid_divisions}
         # The RL framework will receive observations for the new agents and rewards for the new agents.
         # note that the length of obs (and cells) may differ from final_rewards due to divisions.
         # The framework's training loop is responsible for mapping the parent's reward (which is now gone)

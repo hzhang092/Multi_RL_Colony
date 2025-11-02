@@ -78,8 +78,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ENV_SEED = 686                 # Fixed seed for reproducible experiments
 
 # Training schedule
-NUM_UPDATES = 500             # Total number of policy updates to perform
-STEPS_PER_UPDATE = 150         # Environment steps collected per policy update
+NUM_UPDATES = 1            # Total number of policy updates to perform
+STEPS_PER_UPDATE = 300         # Environment steps collected per policy update
                                # Total training steps = NUM_UPDATES * STEPS_PER_UPDATE
 
 # PPO algorithm parameters
@@ -196,6 +196,7 @@ def main():
         episode_rewards = []  # Track rewards for logging
         num_cells = []
         action_history = []
+        invalid_divide_count = 0
         
         while collected_steps < STEPS_PER_UPDATE:
             # Convert observations to tensors for neural network processing
@@ -212,6 +213,7 @@ def main():
             # now len(rewards) == number of agents that acted == len(actions)
             next_obs, rewards, terminated, truncated, info = env.step(actions)
             done_flag = bool(terminated or truncated)
+            invalid_divide_count += info.get("invalid_divisions", 0)
 
             # Store action history
             action_history.extend(sampled_type.cpu().numpy().tolist())
@@ -219,7 +221,6 @@ def main():
             # Process rewards and prepare for storage
             rewards_arr = np.asarray(rewards, dtype=np.float32)
             episode_rewards.extend(rewards)  # Collect for logging
-            num_cells.append(info["n_cells"])
             
             num_survivors = 0
             survivor_indices = []
@@ -291,6 +292,7 @@ def main():
             
             # Reset environment if episode ended
             if done_flag:
+                num_cells.append(info["n_cells"])
                 obs, _ = env.reset()
                 num_survivors = 0  # Reset survivor count for next episode
                 
@@ -310,14 +312,11 @@ def main():
         # =====================================================
         # Logging and Checkpointing
         # =====================================================
-        if update % 10 == 0:
+        if update % 1 == 0:
             # Time for the last 10 updates (since previous 10-update log)
             elapsed_time = time.time() - last_log_time
             avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
             avg_num_cells = int(np.mean(num_cells)) if num_cells else 0
-            max_num_cells = int(np.max(num_cells)) if num_cells else 0
-            median_num_cells = int(np.median(num_cells)) if num_cells else 0
-            std_num_cells = int(np.std(num_cells)) if num_cells else 0
             action_tuple = (np.sum(np.array(action_history) == 0), np.sum(np.array(action_history) == 1), np.sum(np.array(action_history) == 2))
             
             logger.info(
@@ -326,15 +325,13 @@ def main():
                 f"Transitions: {num_transitions:5d} | "
                 f"Time: {elapsed_time:6.1f}s | "
                 f"AVG Reward: {avg_reward:6.3f} | "
-                f"AVG Num Cells: {avg_num_cells:4d} | "
-                f"MAX Num Cells: {max_num_cells:4d} | "
-                f"MED Num Cells: {median_num_cells:4d} | "
-                f"STD Num Cells: {std_num_cells:4d} | "
+                f"all cell num: {num_cells} | "
                 f"P_Loss: {train_stats['policy_loss']:.3f} | "
                 f"V_Loss: {train_stats['value_loss']:.3f} | "
                 f"Entropy: {train_stats['entropy']:.3f} | "
                 f"Avg_Return: {train_stats['avg_return']:.3f} | "
-                f"avg actions: {action_tuple}"
+                f"avg actions: {action_tuple} | "
+                f"Invalid_Divides: {invalid_divide_count}"
             )
             # Reset timer baseline for next 10 updates
             last_log_time = time.time()
