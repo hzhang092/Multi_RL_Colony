@@ -39,6 +39,7 @@ from .utilities.geo_helpers import (
     polygon_area,
     pca_aspect_ratio,
     fourier_descriptor_from_boundary,
+    get_local_anisotropy
 )
 
 # ---------- Geometry helpers (self-contained) ----------
@@ -105,7 +106,9 @@ class ColonyEnv(gym.Env):
                  L_divide=2.0,
                  max_cells=80,
                  K_nn=6, # number of nearest neighbors in observation
-                 fourier_K=8,
+                 #fourier_K=8,
+                 anisotropy_multiplier=3.0,
+                 target_anisotropy=0.9,
                  seed: Optional[int]=None):
         """
         Initializes the Colony environment.
@@ -129,11 +132,13 @@ class ColonyEnv(gym.Env):
         self.L_init = L_init # initial length of the first cell
         self.L_divide = L_divide
         self.K_nn = K_nn
-        self.growth_rate = 0.5
+        self.growth_rate = 0.50
         
-        self.fourier_K = fourier_K
+        #self.fourier_K = fourier_K
         self.rng = np.random.default_rng(seed)
         self.dt = 1.0 # step duration
+        self.anisotropy_multiplier = anisotropy_multiplier
+        self.target_anisotropy = target_anisotropy
         
         # ---------- Reward parameters ----------
         self.r_grow = 0.005 # Small reward for growing
@@ -143,6 +148,7 @@ class ColonyEnv(gym.Env):
         self.p_living = -0.0001 # small penalty per timestep to encourage faster growth
         self.p_too_long = 0 #-0.005 # penalty for cells that grow too long (to discourage endless growth)
         self.r_colony_size = 2 # weight for colony size in global reward
+        self.r_morphology = 2.0 # weight for morphology matching in global reward
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
@@ -162,7 +168,7 @@ class ColonyEnv(gym.Env):
         self.observation_space = spaces.Box(low=low, high=high, shape=(obs_dim,), dtype=np.float32)
 
         # Define the target morphology for the reward function.
-        self.M_target = {"AR": 0.7, "D": 0.9, "F": np.zeros(self.fourier_K)}  # target morphology metrics
+        #self.M_target = {"AR": 0.7, "D": 0.9, "F": np.zeros(self.fourier_K)}  # target morphology metrics
         self.reset()
 
     def reset(self, *, seed: Optional[int]=None, options: Optional[dict]=None):
@@ -262,11 +268,12 @@ class ColonyEnv(gym.Env):
         self.t += 1
         # gather observations, rewards, and check for termination
         obs = self._gather_obs()
-        final_rewards = self._compute_rewards(rewards_for_acted_cells)
+        final_rewards, Anisotropy = self._compute_rewards(rewards_for_acted_cells)
         terminated, truncated = self._check_done()
         info = {"n_cells": len(self.cells),
                 "survivor_indices": survivor_indices_from_original_list,
-                "invalid_divisions": invalid_divisions}
+                "invalid_divisions": invalid_divisions,
+                "mean_anisotropy": Anisotropy}
         # The RL framework will receive observations for the new agents and rewards for the new agents.
         # note that the length of obs (and cells) may differ from final_rewards due to divisions.
         # The framework's training loop is responsible for mapping the parent's reward (which is now gone)
@@ -398,45 +405,41 @@ class ColonyEnv(gym.Env):
         """
         N = len(self.cells)
         if N < 2:
-            return np.zeros(N)
+            # Keep return shape consistent: (rewards_array, mean_anisotropy)
+            # When there are fewer than 2 cells, return the input rewards (no morphology term)
+            # and a mean anisotropy of 0.0 so callers can always unpack two values.
+            return rewards_for_acted, 0.0
         
         # --- Global morphology calculation ---
-        """
-        all_endpoints = np.vstack([c.endpoints() for c in self.cells])
-        hull_pts = monotone_chain_convex_hull(all_endpoints)
         
-        # Aspect Ratio (AR)
-        AR = pca_aspect_ratio(all_endpoints)
+        #all_endpoints = np.vstack([c.endpoints() for c in self.cells])
+        #hull_pts = monotone_chain_convex_hull(all_endpoints)
+        all_centers = np.array([c.pos for c in self.cells])
+        all_orientations = np.array([c.theta for c in self.cells])
+        #print(all_centers.shape, all_orientations.shape)
         
-        # Density (D)
-        colony_area = polygon_area(hull_pts)
-        
-        # Use a fixed radius for density calculation
-        effective_radius = 0.5
-        cell_area = sum(c.length * 2 * effective_radius for c in self.cells)
-        D = cell_area / colony_area if colony_area > 1e-9 else 0.0
-        
-        # Fourier Descriptors (F)
-        F = fourier_descriptor_from_boundary(hull_pts, K=self.fourier_K)
+        # anisotropy
+        # note: there Anisotropy contains newly divide cells as well, and it preserved the order of self.cells
+        Anisotropy = get_local_anisotropy(all_centers, all_orientations, self.anisotropy_multiplier)
+        prev_len = len(rewards_for_acted)
+        Anisotropy = Anisotropy[:prev_len]  # only keep for acted cells
         
         # --- Reward calculation ---
         # Compare current morphology to target
-        err_AR = (AR - self.M_target["AR"])**2
-        err_D = (D - self.M_target["D"])**2
-        err_F = np.mean((F - self.M_target["F"])**2)
+        err_Anisotropy = (Anisotropy - self.target_anisotropy)**2
         
         # Global reward is inverse of error (higher is better)
-        w_AR, w_D, w_F = 1.0, 1.0, 0.5
-        global_reward = 1.0 / (1.0 + w_AR*err_AR + w_D*err_D + w_F*err_F)
-        """        
+        w_Anisotropy = 1.0
+        morphology_reward = 1.0 / (1.0 + w_Anisotropy*err_Anisotropy)
+             
         # Simplified global reward based on number of cells (encourages growth)
-        global_reward = min(N / self.max_cells, 1.0)
-        rewards_for_acted += global_reward * self.r_colony_size
+        size_reward = min(N / self.max_cells, 1.0)
+        rewards_for_acted += (size_reward * self.r_colony_size + morphology_reward * self.r_morphology)/ max(prev_len,1)
+        
+        print(f"mean: {np.mean(morphology_reward * self.r_morphology/ max(prev_len,1)/rewards_for_acted)}")
+        print(f"median: {np.median(morphology_reward * self.r_morphology/ max(prev_len,1)/rewards_for_acted)}")
 
-        # Optional: Small penalty for existing (cost of living).
-        rewards_for_acted -= 0.001
-
-        return rewards_for_acted
+        return rewards_for_acted, np.mean(Anisotropy)
 
     def _check_done(self):
         """
