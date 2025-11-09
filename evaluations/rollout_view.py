@@ -43,9 +43,14 @@ FIGSIZE = (7, 7)
 SAVE_FRAMES: bool = False
 FRAMES_DIR: str = "eval_frames"  # used only if SAVE_FRAMES=True
 
+# Final frame display options
+SHOW_FINAL: bool = True        # ensure the last frame is displayed after loop ends
+FINAL_BLOCK: bool = True       # block on plt.show() so the window stays until closed
+FINAL_PAUSE_SEC: float = 2.0   # used if FINAL_BLOCK=False
+
 # Policy selection
-USE_TRAINED: bool = True
-CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1013-3.pt"  # ignored if USE_TRAINED=False
+USE_TRAINED: bool = True  # False: random policy
+CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1102-1305.pt" #"saved_checkpoints/ppo_colony_final-1013-3.pt"  # ignored if USE_TRAINED=False
 DETERMINISTIC: bool = False   # True: argmax; False: stochastic sampling
 
 # Device for policy
@@ -117,9 +122,11 @@ def main():
 
     terminated = False
     truncated = False
+    last_step = -1
     for step in range(MAX_STEPS):
         actions = select_actions(obs, agent)
         obs, rewards, terminated, truncated, info = env.step(actions)
+        last_step = step
 
         if step % RENDER_INTERVAL == 0 or terminated or truncated or step == 0:
             img = env.render(mode="rgb_array")
@@ -129,20 +136,38 @@ def main():
                 ax.axis('off')
             else:
                 im.set_data(img)
-            ax.set_title(f"Step {step} | Cells: {len(obs)}")
-            plt.pause(0.001)
+            ax.set_title(f"Step {step+1} | Cells: {len(obs)} | Reward: {np.sum(rewards):.3f}")
+            plt.pause(0.01)
 
             if SAVE_FRAMES and frames_dir is not None:
                 out_path = frames_dir / f"frame_{step:05d}.png"
                 plt.imsave(out_path.as_posix(), img)
 
         if terminated or truncated:
+            print(f"Episode ended at step {step}.")
             break
 
-    # Show final frame for a moment
-    plt.pause(0.5)
-    plt.ioff()
-    plt.show(block=False)
+    # Always render and display the final frame
+    if SHOW_FINAL:
+        img = env.render(mode="rgb_array")
+        if im is None:
+            ax.clear()
+            im = ax.imshow(img)
+            ax.axis('off')
+        else:
+            im.set_data(img)
+        status = "terminated" if terminated else ("truncated" if truncated else "finished")
+        ax.set_title(f"Final ({status}) | Step {last_step} | Cells: {len(obs)}")
+        plt.draw()
+        if SAVE_FRAMES and frames_dir is not None:
+            out_path = frames_dir / f"frame_{last_step:05d}_final.png"
+            plt.imsave(out_path.as_posix(), img)
+
+        if FINAL_BLOCK:
+            plt.ioff()
+            plt.show()
+        else:
+            plt.pause(FINAL_PAUSE_SEC)
     env.close()
 
 

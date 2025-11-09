@@ -78,7 +78,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ENV_SEED = 686                 # Fixed seed for reproducible experiments
 
 # Training schedule
-NUM_UPDATES = 1            # Total number of policy updates to perform
+NUM_UPDATES = 500            # Total number of policy updates to perform
 STEPS_PER_UPDATE = 300         # Environment steps collected per policy update
                                # Total training steps = NUM_UPDATES * STEPS_PER_UPDATE
 
@@ -234,15 +234,15 @@ def main():
 
                 # save survivor indices (cells that did not divide) for mapping next values
                 survivor_indices = info.get("survivor_indices", [])
-                num_survivors = len(survivor_indices)
+                
 
             # Build next_values for GAE:
             # - Start with baseline = parent's current value (neutral w.r.t dividing)
             # - For survivors: use actual next-state values from next_obs
             # - For dividing parents: blend avg child value with parent value to encourage correct division
             N_agents_acted = len(obs)  # Number of agents that took actions
-            parent_values_np = values.cpu().numpy().flatten().astype(np.float32)
-            next_values_for_acting_agents = parent_values_np.copy()
+            current_values_np = values.cpu().numpy().flatten().astype(np.float32)
+            next_values_for_acting_agents = current_values_np.copy()
 
             if len(next_obs) > 0 and not done_flag and next_values_np.size > 0:
                 # Assign survivors' next values (next_obs ordering: [survivors..., children...])
@@ -257,10 +257,10 @@ def main():
                     if child_values_np.size > 0:
                         avg_child_value = float(np.mean(child_values_np))
                     else:
-                        # Fallback: average over all next values if children slice is empty
+                        # Fallback: average over all next values if children slice is empty, which should not happen
                         avg_child_value = float(np.mean(next_values_np)) if next_values_np.size > 0 else 0.0
 
-                    blend = 0.8  # weight for child value vs parent value (tunable 0.7–0.9)
+                    blend = 0.6  # weight for child value vs parent value (tunable 0.7–0.9)
                     for idx_parent in dividing_parents:
                         parent_val = next_values_for_acting_agents[idx_parent]
                         next_values_for_acting_agents[idx_parent] = (
@@ -295,8 +295,9 @@ def main():
                 num_cells.append(info["n_cells"])
                 obs, _ = env.reset()
                 num_survivors = 0  # Reset survivor count for next episode
-                
-        
+            elif collected_steps == STEPS_PER_UPDATE-1:
+                num_cells.append(info["n_cells"])
+
         # =====================================================
         # Policy Update Phase
         # =====================================================
@@ -312,12 +313,13 @@ def main():
         # =====================================================
         # Logging and Checkpointing
         # =====================================================
-        if update % 1 == 0:
+        if update % 10 == 0:
             # Time for the last 10 updates (since previous 10-update log)
             elapsed_time = time.time() - last_log_time
             avg_reward = np.mean(episode_rewards) if episode_rewards else 0.0
-            avg_num_cells = int(np.mean(num_cells)) if num_cells else 0
+            avg_num_cells = int(np.mean(num_cells[:-1])) if num_cells else 0
             action_tuple = (np.sum(np.array(action_history) == 0), np.sum(np.array(action_history) == 1), np.sum(np.array(action_history) == 2))
+            invalid_divide_percent = (invalid_divide_count / action_tuple[2]) if action_tuple[2] > 0 else 0.0
             
             logger.info(
                 f"Update {update:4d}/{NUM_UPDATES} | "
@@ -325,13 +327,13 @@ def main():
                 f"Transitions: {num_transitions:5d} | "
                 f"Time: {elapsed_time:6.1f}s | "
                 f"AVG Reward: {avg_reward:6.3f} | "
-                f"all cell num: {num_cells} | "
+                f"Avg Num Cells: {avg_num_cells:4d} | "
                 f"P_Loss: {train_stats['policy_loss']:.3f} | "
                 f"V_Loss: {train_stats['value_loss']:.3f} | "
                 f"Entropy: {train_stats['entropy']:.3f} | "
                 f"Avg_Return: {train_stats['avg_return']:.3f} | "
                 f"avg actions: {action_tuple} | "
-                f"Invalid_Divides: {invalid_divide_count}"
+                f"Invalid_Divides%: {invalid_divide_percent:.2f}"
             )
             # Reset timer baseline for next 10 updates
             last_log_time = time.time()
