@@ -197,10 +197,10 @@ def main():
         num_cells = []
         action_history = []
         invalid_divide_count = 0
-        mean_anisotropy = 0.0
-        mean_delta_anisotropy = 0.0
-        frac_positive_delta = 0.0
-        delta_reward_mean = 0.0
+        mean_anisotropy = []
+        mean_delta_anisotropy = []
+        frac_positive_delta = []
+        delta_reward_mean = []
         
         while collected_steps < STEPS_PER_UPDATE:
             # Convert observations to tensors for neural network processing
@@ -297,10 +297,10 @@ def main():
             # Reset environment if episode ended
             if done_flag:
                 num_cells.append(info["n_cells"])
-                mean_anisotropy += info.get("mean_anisotropy", 0.0)
-                mean_delta_anisotropy += info.get("mean_delta_anisotropy", 0.0)
-                frac_positive_delta += info.get("frac_positive_delta", 0.0)
-                delta_reward_mean += info.get("delta_reward_mean", 0.0)
+                mean_anisotropy.append(info.get("mean_anisotropy", 0.0))
+                mean_delta_anisotropy.append(info.get("mean_delta_anisotropy", 0.0))
+                frac_positive_delta.append(info.get("frac_positive_delta", 0.0))
+                delta_reward_mean.append(info.get("delta_reward_mean", 0.0))
                 
                 obs, _ = env.reset()
                 num_survivors = 0  # Reset survivor count for next episode
@@ -329,7 +329,7 @@ def main():
             avg_num_cells = int(np.mean(num_cells[:-1])) if num_cells else 0
             action_tuple = (np.sum(np.array(action_history) == 0), np.sum(np.array(action_history) == 1), np.sum(np.array(action_history) == 2))
             invalid_divide_percent = (invalid_divide_count / action_tuple[2]) if action_tuple[2] > 0 else 0.0
-            mean_anisotropy = np.mean(mean_anisotropy) # mean of mean anisotropy at each episode end
+            mean_mean_anisotropy = np.mean(mean_anisotropy) # mean of mean anisotropy at each episode end
             mean_delta_anisotropy = np.mean(mean_delta_anisotropy) if mean_delta_anisotropy else 0.0
             frac_positive_delta = np.mean(frac_positive_delta) if frac_positive_delta else 0.0
             delta_reward_mean = np.mean(delta_reward_mean) if delta_reward_mean else 0.0
@@ -347,9 +347,9 @@ def main():
                 f"Avg_Return: {train_stats['avg_return']:.3f} | "
                 f"avg actions: {action_tuple} | "
                 f"Invalid_Divides%: {invalid_divide_percent:.2f} | "
-                f"Mean_Anisotropy: {mean_anisotropy:.3f} | "
-                f"Mean_Delta_Anisotropy: {mean_delta_anisotropy:.3f} | "
-                f"Frac_Positive_Delta: {frac_positive_delta:.3f} | "
+                f"Mean_Anisotropy: {mean_mean_anisotropy:.3f} | "
+                f"Mean_Target_Improvement: {mean_delta_anisotropy:.3f} | "
+                f"Frac_Positive_Improvement: {frac_positive_delta:.3f} | "
                 f"Delta_Reward_Mean: {delta_reward_mean:.3f}"   
             )
             # Reset timer baseline for next 10 updates

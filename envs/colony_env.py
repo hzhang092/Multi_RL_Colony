@@ -150,23 +150,24 @@ class ColonyEnv(gym.Env):
         self.p_living = -0.0001 # small penalty per timestep to encourage faster growth
         self.p_too_long = 0 #-0.005 # penalty for cells that grow too long (to discourage endless growth)
         self.r_colony_size = 2 # weight for colony size in global reward
-        self.r_morphology = 2.0 # weight for morphology matching in global reward
+        self.r_morphology = 5.0 # weight for morphology matching in global reward
 
         # The action and observation spaces are defined for a single agent.
         # An external policy manager is expected to handle the multi-agent setup.
         self.action_space = spaces.Discrete(3)  # 0: dormant, 1: grow, 2: divide
         
-        # Observation per cell (6 features):
+        # Observation per cell (7 features):
         #- Internal state variables: 
         #    - length, age, orientation (sin, cos)
         #- Relational features
         #    - local_density: smoothed local crowding using a Gaussian kernel
         #    - pressure_proxy: averaged inverse distance to neighbors
-        obs_dim = 6
+        #    - local_anisotropy: local alignment metric
+        obs_dim = 7
         # Element-wise bounds for normalized features:
-        # [rel_length (0..1.25), rel_age (0..1), orientation_sin(0..1), orientation_cos(0..1), local_density (0..1), pressure_proxy (0..1)]
-        low = np.array([0.0, 0.0, -1.0, -1.0, 0.0, 0.0], dtype=np.float32)
-        high = np.array([1.25, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        # [rel_length (0..1.25), rel_age (0..1), orientation_sin(0..1), orientation_cos(0..1), local_density (0..1), pressure_proxy (0..1), local_anisotropy (0..1)]
+        low = np.array([0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        high = np.array([1.25, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
         self.observation_space = spaces.Box(low=low, high=high, shape=(obs_dim,), dtype=np.float32)
 
         # Define the target morphology for the reward function.
@@ -302,6 +303,7 @@ class ColonyEnv(gym.Env):
         - Relational features
             - local_density: smoothed local crowding using a Gaussian kernel
             - pressure_proxy: averaged inverse distance to neighbors
+            - local_anisotropy: local alignment metric
 
         Returns:
             np.ndarray: An 2d array of observations, one row per cell.
@@ -309,17 +311,20 @@ class ColonyEnv(gym.Env):
         if not self.cells:
             return np.array([])
         centers = np.array([c.pos for c in self.cells])
-        return np.array([self._obs_for_cell(i, centers) for i in range(len(self.cells))])
+        orientations = np.array([c.theta for c in self.cells])
+        anisotropies = get_local_anisotropy(centers, orientations, self.anisotropy_multiplier)
+        return np.array([self._obs_for_cell(i, centers, anisotropies[i]) for i in range(len(self.cells))])
 
-    def _obs_for_cell(self, idx, centers):
+    def _obs_for_cell(self, idx, centers, anisotropy):
         """
-        Compute observation for a single cell with 6 features:
+        Compute observation for a single cell with 7 features:
         - rel_length: current length / division length
         - rel_age: current age / max age
         - orientation_sin: sin(theta)
         - orientation_cos: cos(theta)
         - local_density: smoothed local crowding using a Gaussian kernel
         - pressure_proxy: averaged inverse distance to neighbors
+        - local_anisotropy: local alignment metric
         """
         cell = self.cells[idx]
         # Distances to all cells
@@ -363,7 +368,7 @@ class ColonyEnv(gym.Env):
         else:
             pressure_proxy = 0.0
 
-        return np.array([rel_length, rel_age, orientation_sin, orientation_cos, local_density, pressure_proxy], dtype=np.float32)
+        return np.array([rel_length, rel_age, orientation_sin, orientation_cos, local_density, pressure_proxy, anisotropy], dtype=np.float32)
 
     def _relax_positions(self, max_iters=12):
         """
@@ -455,7 +460,14 @@ class ColonyEnv(gym.Env):
             survivor_count = len(survivor_indices)
             current_survivor_anis = current_anisotropy[:survivor_count]
             prev_survivor_anis = self.prev_anisotropy[survivor_indices]
-            deltas = current_survivor_anis - prev_survivor_anis
+            
+            # Calculate distance to target
+            current_dist = np.abs(current_survivor_anis - self.target_anisotropy)
+            prev_dist = np.abs(prev_survivor_anis - self.target_anisotropy)
+
+            # Improvement is positive if we got closer to the target
+            deltas = prev_dist - current_dist 
+            
             positive_deltas = np.clip(deltas, 0.0, None) # only positive improvements
             delta_rewards = self.anisotropy_delta_coef * positive_deltas # linear reward for positive improvements
             rewards_for_acted[:survivor_count] += delta_rewards / max(survivor_count, 1)
