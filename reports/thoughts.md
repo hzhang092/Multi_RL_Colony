@@ -1,0 +1,2 @@
+1. for awards, can use delta instaed of absolute ones.  
+A delta-based variant means you reward changes (improvements) in the morphology metric (anisotropy) rather than its absolute value each step. Instead of: reward += f(current_anisotropy) you do: reward += g(current_anisotropy - previous_anisotropy). This sharpens credit assignment: an agent (or the colony state at that timestep) only gets positive morphology reward when it actually increased local order, and is penalized (or gets nothing) when order stagnates or decreases.
