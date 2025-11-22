@@ -48,71 +48,45 @@ from typing import Union
 # =====================================================
 class SharedActorCritic(nn.Module):
     """
-    Shared Actor-Critic Neural Network for Multi-Agent Colony Environment.
-    
-    This network serves as both the policy (actor) and value function (critic) for all agents
-    in the colony environment. It handles the hybrid action space consisting of:
-    - Discrete action type selection (3 types: dormant, grow, reproduce)
-    - Continuous parameters grow_frac
-    
-    Architecture:
-    - Shared encoder: Maps observations to hidden representations
-    - Type head: Outputs logits for discrete action type distribution
-    - Parameter head: Outputs mean values for continuous parameter distributions
-    - Value head: Outputs state-value estimates for the critic
-    
+    Shared Actor-Critic Neural Network (simplified MLP).
+
+    Minimal, stable architecture suitable for small observation spaces.
+    - Shared encoder: 2-layer MLP (no dropout)
+    - Actor head: lightweight MLP to logits over discrete actions
+    - Critic head: lightweight MLP to scalar value
+
     Args:
         obs_dim (int): Dimension of the observation space from the environment
         n_types (int, optional): Number of discrete action types. Defaults to 3.
         hidden (int, optional): Size of hidden layers in the network. Defaults to 128.
-    
+
     Returns:
-        When called with forward():
-        - logits (torch.Tensor): Raw logits for discrete action type (shape: [batch, n_types])
-        - param_mean (torch.Tensor): Mean values for continuous parameters (shape: [batch, 2])
-        - param_std (torch.Tensor): Standard deviations for continuous parameters (shape: [2])
-        - value (torch.Tensor): State-value estimates (shape: [batch])
-    
-    Example:
-        >>> network = SharedActorCritic(obs_dim=10, n_types=3, hidden=128)
-        >>> obs = torch.randn(32, 10)  # batch of 32 observations
-        >>> logits, means, stds, values = network(obs)
-        >>> logits.shape  # torch.Size([32, 3])
-        >>> means.shape   # torch.Size([32, 2])
-        >>> values.shape  # torch.Size([32])
+        tuple(logits, value):
+            - logits (torch.Tensor): [batch, n_types]
+            - value (torch.Tensor):  [batch]
     """
     def __init__(self, obs_dim: int, n_types: int = 3, hidden: int = 128):
         super().__init__()
-        # Deeper encoder with residual-like connections and dropout for better learning
+        # Simple shared encoder without dropout
         self.encoder = nn.Sequential(
             nn.Linear(obs_dim, hidden),
             nn.ReLU(),
-            nn.Dropout(0.1),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden, hidden),
-            nn.ReLU()
-        )
-        
-        # Enhanced Actor head: deeper network for better action discrimination
-        self.actor_head = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
-            nn.Linear(hidden // 2, n_types)
         )
 
-        # Enhanced Critic head: separate value estimation pathway
-        self.critic_head = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Dropout(0.1),
+        # Lightweight Actor head
+        self.actor_head = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
-            nn.Linear(hidden // 2, 1)
+            nn.Linear(hidden // 2, n_types),
+        )
+
+        # Lightweight Critic head (no dropout for stability)
+        self.critic_head = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, 1),
         )
 
     def forward(self, obs: torch.FloatTensor):
