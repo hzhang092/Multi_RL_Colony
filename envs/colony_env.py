@@ -110,6 +110,8 @@ class ColonyEnv(gym.Env):
                  anisotropy_multiplier=3.0,
                  anisotropy_delta_coef=1.0,
                  target_anisotropy=0.9,
+                 division_jitter=0.1,
+                 torque_rate=0.5,
                  seed: Optional[int]=None):
         """
         Initializes the Colony environment.
@@ -134,6 +136,8 @@ class ColonyEnv(gym.Env):
         self.L_divide = L_divide
         self.K_nn = K_nn
         self.growth_rate = 0.50
+        self.division_jitter = division_jitter
+        self.torque_rate = torque_rate
         
         #self.fourier_K = fourier_K
         self.rng = np.random.default_rng(seed)
@@ -163,11 +167,11 @@ class ColonyEnv(gym.Env):
         #    - local_density: smoothed local crowding using a Gaussian kernel
         #    - pressure_proxy: averaged inverse distance to neighbors
         #    - local_anisotropy: local alignment metric
-        obs_dim = 7
+        obs_dim = 6
         # Element-wise bounds for normalized features:
         # [rel_length (0..1.25), rel_age (0..1), orientation_sin(0..1), orientation_cos(0..1), local_density (0..1), pressure_proxy (0..1), local_anisotropy (0..1)]
-        low = np.array([0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        high = np.array([1.25, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        low = np.array([0.0, 0.0, -1.0, -1.0, 0.0, 0.0], dtype=np.float32)
+        high = np.array([1.25, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
         self.observation_space = spaces.Box(low=low, high=high, shape=(obs_dim,), dtype=np.float32)
 
         # Define the target morphology for the reward function.
@@ -257,7 +261,7 @@ class ColonyEnv(gym.Env):
                 survivor_indices_from_original_list.append(i)
                 continue
             # Divide the cell
-            jitter = self.rng.normal(0, 0.1)
+            jitter = self.rng.normal(0, self.division_jitter)
             L_new = cell.length / 2.0
             offset_dist = L_new / 2.0
             offset = offset_dist * np.array([math.cos(cell.theta), math.sin(cell.theta)])
@@ -312,10 +316,10 @@ class ColonyEnv(gym.Env):
             return np.array([])
         centers = np.array([c.pos for c in self.cells])
         orientations = np.array([c.theta for c in self.cells])
-        anisotropies = get_local_anisotropy(centers, orientations, self.anisotropy_multiplier)
-        return np.array([self._obs_for_cell(i, centers, anisotropies[i]) for i in range(len(self.cells))])
+        #anisotropies = get_local_anisotropy(centers, orientations, self.anisotropy_multiplier)
+        return np.array([self._obs_for_cell(i, centers) for i in range(len(self.cells))])
 
-    def _obs_for_cell(self, idx, centers, anisotropy):
+    def _obs_for_cell(self, idx, centers):
         """
         Compute observation for a single cell with 7 features:
         - rel_length: current length / division length
@@ -368,7 +372,7 @@ class ColonyEnv(gym.Env):
         else:
             pressure_proxy = 0.0
 
-        return np.array([rel_length, rel_age, orientation_sin, orientation_cos, local_density, pressure_proxy, anisotropy], dtype=np.float32)
+        return np.array([rel_length, rel_age, orientation_sin, orientation_cos, local_density, pressure_proxy], dtype=np.float32)
 
     def _relax_positions(self, max_iters=12):
         """
@@ -391,20 +395,43 @@ class ColonyEnv(gym.Env):
                     # Use a fixed radius for collision detection, as sticks have no radius
                     effective_radius = 0.5 
 
-                    _, _, dist = seg_seg_closest_points(p1a, p1b, p2a, p2b)
+                    pa, pb, dist = seg_seg_closest_points(p1a, p1b, p2a, p2b)
                     overlap = (2 * effective_radius) - dist
                     
                     if overlap > 0:
                         # Simple linear push-apart
                         direction = c2.pos - c1.pos
-                        if np.linalg.norm(direction) < 1e-9:
+                        norm = np.linalg.norm(direction)
+                        if norm < 1e-9:
                             direction = self.rng.random(2) - 0.5
+                            norm = np.linalg.norm(direction)
                         
-                        direction = unit_vector(direction)
+                        direction = direction / norm
                         push = 0.5 * overlap * direction
                         
                         c1.pos -= push
                         c2.pos += push
+
+                        # Rotational push (Torque)
+                        # Torque = r x F
+                        # F1 (on c1) = -push_mag * direction
+                        # F2 (on c2) = push_mag * direction
+                        
+                        # Lever arms
+                        r1 = pa - c1.pos
+                        r2 = pb - c2.pos
+                        
+                        # 2D cross product (z-component): x1*y2 - x2*y1
+                        torque1 = r1[0] * (-direction[1]) - r1[1] * (-direction[0])
+                        torque2 = r2[0] * (direction[1]) - r2[1] * (direction[0])
+                        
+                        # Apply rotation (dtheta)
+                        # Limit rotation to avoid instability
+                        dtheta1 = np.clip(self.torque_rate * torque1 * overlap, -0.1, 0.1)
+                        dtheta2 = np.clip(self.torque_rate * torque2 * overlap, -0.1, 0.1)
+                        
+                        c1.theta += dtheta1
+                        c2.theta += dtheta2
 
     def _compute_rewards(self, rewards_for_acted, survivor_indices: List[int]):
         """
