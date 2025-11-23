@@ -280,12 +280,18 @@ class ColonyEnv(gym.Env):
         final_rewards, Anisotropy, delta_stats = self._compute_rewards(
             rewards_for_acted_cells, survivor_indices_from_original_list
         )
+        
+        # Calculate Aspect Ratio for info
+        all_points = np.array([c.pos for c in self.cells])
+        colony_ar = pca_aspect_ratio(all_points)
+
         terminated, truncated = self._check_done()
         info = {
             "n_cells": len(self.cells),
             "survivor_indices": survivor_indices_from_original_list,
             "invalid_divisions": invalid_divisions,
             "mean_anisotropy": Anisotropy,
+            "colony_aspect_ratio": colony_ar,
             "mean_delta_anisotropy": delta_stats["mean_delta"],
             "frac_positive_delta": delta_stats["frac_positive"],
             "delta_reward_mean": delta_stats["delta_reward_mean"],

@@ -15,7 +15,8 @@ How to use (no argparse):
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Tuple
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 import numpy as np
 import csv
@@ -27,7 +28,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from envs.colony_env import ColonyEnv
-from envs.utilities.geo_helpers import get_local_anisotropy
+from envs.utilities.geo_helpers import get_local_anisotropy, pca_aspect_ratio
 try:
     from agents.ppo_agent import PPOAgent, make_action_dicts
 except Exception:
@@ -39,23 +40,25 @@ except Exception:
 # CONFIG (edit these)
 # ======================
 SEED: int = 686
-NUM_RUNS: int = 20
+NUM_RUNS: int = 50
 TARGET_CELLS: int = 80            # Stop an episode when this many cells exist
-MAX_STEPS_PER_RUN: int = 200     # Safety cap on steps per run
+MAX_STEPS_PER_RUN: int = 150     # Safety cap on steps per run
 
 # Neighbourhood range used in local anisotropy (distance threshold)
 # A reasonable default is tied to division length; final value computed at runtime.
 NEIGHBORHOOD_MULTIPLIER: float = 3.0   # neighbourhood_range = multiplier * env.L_divide
 
-# Save CSV results
-SAVE_CSV: bool = False
-CSV_PATH: str = "evaluations/anisotropy_random_runs.csv"
-
 # Policy config (set USE_TRAINED=True to use a checkpoint)
 USE_TRAINED: bool = True
-CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1013-3.pt"  # used only if USE_TRAINED=True
+CHECKPOINT_FOLDER: str = "saved_checkpoints"
+CHECKPOINT_NAME: str = "ppo_colony_final-1112-1700.pt"
+CHECKPOINT_PATH: str = f"{CHECKPOINT_FOLDER}/{CHECKPOINT_NAME}"  # used only if USE_TRAINED=True
 DETERMINISTIC: bool = False   # True: argmax over logits; False: stochastic sampling
 DEVICE: Optional[str] = None # None auto-selects; set to 'cpu' to force CPU
+
+# Save CSV results
+SAVE_CSV: bool = False
+CSV_PATH: str = "evaluations/" + CHECKPOINT_NAME.replace(".pt", ".csv")
 
 
 def _fallback_make_action_dicts(action_types: np.ndarray):
@@ -99,10 +102,10 @@ def _select_actions(obs: np.ndarray, agent: Optional[Any]) -> list:
     return sampled_type.detach().cpu().numpy().astype(int).tolist()
 
 
-def run_single_episode(env: ColonyEnv, target_cells: int, max_steps: int, neighbourhood_range: float, agent: Optional[Any]) -> float:
+def run_single_episode(env: ColonyEnv, target_cells: int, max_steps: int, neighbourhood_range: float, agent: Optional[Any]) -> Tuple[float, float]:
     """Run one random-policy rollout until target cell count or step cap.
 
-    Returns the mean local anisotropy over all cells at the stopping point.
+    Returns (mean local anisotropy, colony aspect ratio) at the stopping point.
     """
     obs, _ = env.reset()
     steps = 0
@@ -118,22 +121,31 @@ def run_single_episode(env: ColonyEnv, target_cells: int, max_steps: int, neighb
         steps += 1
 
         if len(env.cells) >= target_cells or terminated or truncated:
-            # Compute mean anisotropy
+            # Compute metrics
             centers = np.array([c.pos for c in env.cells], dtype=float)
             thetas = np.array([c.theta for c in env.cells], dtype=float)
+            
             la = get_local_anisotropy(centers, thetas, neighbourhood_range)
-            return float(np.mean(la)) if la.size > 0 else 0.0
+            mean_la = float(np.mean(la)) if la.size > 0 else 0.0
+            
+            ar = pca_aspect_ratio(centers)
+            return mean_la, ar
+
     # If we exit due to step cap, compute anyway
     centers = np.array([c.pos for c in env.cells], dtype=float)
     thetas = np.array([c.theta for c in env.cells], dtype=float)
-    if centers.size == 0:
-        return 0.0
+    
     la = get_local_anisotropy(centers, thetas, neighbourhood_range)
-    return float(np.mean(la)) if la.size > 0 else 0.0
+    mean_la = float(np.mean(la)) if la.size > 0 else 0.0
+    
+    ar = pca_aspect_ratio(centers) if centers.size > 0 else 1.0
+    return mean_la, ar
 
 
 def main():
-    env = ColonyEnv(seed=SEED)
+    env = ColonyEnv(seed=SEED, 
+                    division_jitter=0.15,
+                    torque_rate=0.1)
     # Tie neighbourhood range to environment division length
     neighbourhood_range = NEIGHBORHOOD_MULTIPLIER * getattr(env, 'L_divide', 2.0)
 
@@ -145,40 +157,52 @@ def main():
         obs_dim = obs0.shape[1] if hasattr(obs0, 'shape') and len(obs0.shape) == 2 else 6
         agent = load_agent(CHECKPOINT_PATH, obs_dim)
 
-    results = []
+    results_aniso = []
+    results_ar = []
+    
     for i in range(NUM_RUNS):
-        mean_aniso = run_single_episode(env, TARGET_CELLS, MAX_STEPS_PER_RUN, neighbourhood_range, agent)
-        results.append(mean_aniso)
+        mean_aniso, ar = run_single_episode(env, TARGET_CELLS, MAX_STEPS_PER_RUN, neighbourhood_range, agent)
+        results_aniso.append(mean_aniso)
+        results_ar.append(ar)
+        
         policy_desc = "trained" if agent is not None else "random"
         det_desc = "det" if DETERMINISTIC and agent is not None else ("stoch" if (agent is not None and not DETERMINISTIC) else "uniform")
-        print(f"Run {i+1:02d}/{NUM_RUNS} | policy={policy_desc}/{det_desc} | mean anisotropy = {mean_aniso:.4f}")
+        print(f"Run {i+1:02d}/{NUM_RUNS} | policy={policy_desc}/{det_desc} | Anisotropy={mean_aniso:.4f} | AR={ar:.4f}")
 
-    results_np = np.array(results, dtype=float)
-    overall_mean = float(np.mean(results_np)) if results_np.size else 0.0
-    overall_std = float(np.std(results_np)) if results_np.size else 0.0
+    results_aniso_np = np.array(results_aniso, dtype=float)
+    mean_aniso_all = float(np.mean(results_aniso_np)) if results_aniso_np.size else 0.0
+    std_aniso_all = float(np.std(results_aniso_np)) if results_aniso_np.size else 0.0
+
+    results_ar_np = np.array(results_ar, dtype=float)
+    mean_ar_all = float(np.mean(results_ar_np)) if results_ar_np.size else 0.0
+    std_ar_all = float(np.std(results_ar_np)) if results_ar_np.size else 0.0
 
     print("" + "="*50)
     print(f"Completed {NUM_RUNS} runs")
     print(f"Target cells: {TARGET_CELLS}")
     print(f"Neighbourhood range: {neighbourhood_range:.3f}")
-    print(f"Mean anisotropy across runs: {overall_mean:.4f} ± {overall_std:.4f}")
+    print(f"Mean Anisotropy: {mean_aniso_all:.4f} ± {std_aniso_all:.4f}")
+    print(f"Mean Aspect Ratio: {mean_ar_all:.4f} ± {std_ar_all:.4f}")
 
     if SAVE_CSV:
         csv_path = Path(CSV_PATH)
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, mode='w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(["run", "mean_anisotropy", "target_cells", "neighbourhood_range", "policy", "deterministic", "checkpoint"])
-            for idx, val in enumerate(results, start=1):
+            writer.writerow(["run", "mean_anisotropy", "aspect_ratio", "target_cells", "neighbourhood_range", "policy", "deterministic", "checkpoint"])
+            for idx, (val_a, val_ar) in enumerate(zip(results_aniso, results_ar), start=1):
                 writer.writerow([
                     idx,
-                    f"{val:.6f}",
+                    f"{val_a:.6f}",
+                    f"{val_ar:.6f}",
                     TARGET_CELLS,
                     f"{neighbourhood_range:.6f}",
                     "trained" if agent is not None else "random",
                     bool(DETERMINISTIC) if agent is not None else False,
                     CHECKPOINT_PATH if agent is not None else "",
                 ])
+            writer.writerow([f"Mean Anisotropy: {mean_aniso_all:.4f} +- {std_aniso_all:.4f}"])
+            writer.writerow([f"Mean Aspect Ratio: {mean_ar_all:.4f} +- {std_ar_all:.4f}"])
         print(f"Saved CSV: {csv_path}")
 
     env.close()
