@@ -51,7 +51,7 @@ Output:
 
 # Fix for OpenMP duplicate library warning (common with PyTorch + conda)
 import os
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 import time
 import logging
@@ -197,7 +197,7 @@ def main():
         num_cells = []
         action_history = []
         invalid_divide_count = 0
-        mean_anisotropy = []
+        colony_aspect_ratios = []
         mean_delta_anisotropy = []
         frac_positive_delta = []
         delta_reward_mean = []
@@ -238,6 +238,7 @@ def main():
 
                 # save survivor indices (cells that did not divide) for mapping next values
                 survivor_indices = info.get("survivor_indices", [])
+                num_survivors = len(survivor_indices)
                 
 
             # Build next_values for GAE:
@@ -297,10 +298,7 @@ def main():
             # Reset environment if episode ended
             if done_flag:
                 num_cells.append(info["n_cells"])
-                mean_anisotropy.append(info.get("mean_anisotropy", 0.0))
-                mean_delta_anisotropy.append(info.get("mean_delta_anisotropy", 0.0))
-                frac_positive_delta.append(info.get("frac_positive_delta", 0.0))
-                delta_reward_mean.append(info.get("delta_reward_mean", 0.0))
+                colony_aspect_ratios.append(info.get("colony_aspect_ratio", 0.0))
                 
                 obs, _ = env.reset()
                 num_survivors = 0  # Reset survivor count for next episode
@@ -329,10 +327,7 @@ def main():
             avg_num_cells = int(np.mean(num_cells[:-1])) if num_cells else 0
             action_tuple = (np.sum(np.array(action_history) == 0), np.sum(np.array(action_history) == 1), np.sum(np.array(action_history) == 2))
             invalid_divide_percent = (invalid_divide_count / action_tuple[2]) if action_tuple[2] > 0 else 0.0
-            mean_mean_anisotropy = np.mean(mean_anisotropy) # mean of mean anisotropy at each episode end
-            mean_delta_anisotropy = np.mean(mean_delta_anisotropy) if mean_delta_anisotropy else 0.0
-            frac_positive_delta = np.mean(frac_positive_delta) if frac_positive_delta else 0.0
-            delta_reward_mean = np.mean(delta_reward_mean) if delta_reward_mean else 0.0
+            mean_aspect_ratio = np.mean(colony_aspect_ratios) if colony_aspect_ratios else 0.0
             
             logger.info(
                 f"Update {update:4d}/{NUM_UPDATES} | "
@@ -347,10 +342,7 @@ def main():
                 f"Avg_Return: {train_stats['avg_return']:.3f} | "
                 f"avg actions: {action_tuple} | "
                 f"Invalid_Divides%: {invalid_divide_percent:.2f} | "
-                f"Mean_Anisotropy: {mean_mean_anisotropy:.3f} | "
-                f"Mean_Target_Improvement: {mean_delta_anisotropy:.3f} | "
-                f"Frac_Positive_Improvement: {frac_positive_delta:.3f} | "
-                f"Delta_Reward_Mean: {delta_reward_mean:.3f}"   
+                f"Aspect_Ratios: {colony_aspect_ratios} | "
             )
             # Reset timer baseline for next 10 updates
             last_log_time = time.time()
