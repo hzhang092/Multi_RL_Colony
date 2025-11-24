@@ -146,9 +146,12 @@ def pca_aspect_ratio(points: np.ndarray) -> float:
     cov = np.cov(X.T)
     vals = np.linalg.eigvalsh(cov)
     vals = np.flip(np.sort(vals))
-    if vals[1] <= 1e-9:
-        return float(vals[0] / (vals[1] + 1e-9))
-    return float(max(vals[0] / max(vals[1], 1e-9), 1.0))
+    
+    # Avoid division by zero and clamp the result to prevent reward explosion
+    # An Aspect Ratio of 10.0 is already extremely high for a colony.
+    denom = max(vals[1], 1e-9)
+    raw_ar = vals[0] / denom
+    return float(min(raw_ar, 10.0))
 
 def fourier_descriptor_from_boundary(boundary_pts: np.ndarray, K=8):
     """
