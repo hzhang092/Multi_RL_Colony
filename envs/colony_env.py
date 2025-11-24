@@ -369,7 +369,7 @@ class ColonyEnv(gym.Env):
 
         return np.array([rel_length, rel_age, orientation_sin, orientation_cos, local_density, pressure_proxy], dtype=np.float32)
 
-    def _relax_positions(self, max_iters=12):
+    def _relax_positions(self, max_iters=8):
         """
         Iteratively resolves overlaps between cells.
 
@@ -384,6 +384,15 @@ class ColonyEnv(gym.Env):
             for i in range(len(self.cells)):
                 for j in range(i + 1, len(self.cells)):
                     c1, c2 = self.cells[i], self.cells[j]
+                    
+                    # Optimization: Quick distance check before expensive segment math
+                    # Max reach of a cell is half_length + radius (0.5)
+                    reach_sum = (c1.length * 0.5 + 0.5) + (c2.length * 0.5 + 0.5)
+                    diff = c1.pos - c2.pos
+                    # If centers are further than sum of max reaches, they cannot overlap
+                    if np.dot(diff, diff) > reach_sum * reach_sum:
+                        continue
+
                     p1a, p1b = c1.endpoints()
                     p2a, p2b = c2.endpoints()
                     
