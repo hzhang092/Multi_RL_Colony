@@ -106,10 +106,7 @@ class ColonyEnv(gym.Env):
                  L_divide=2.0,
                  max_cells=80,
                  K_nn=6, # number of nearest neighbors in observation
-                 #fourier_K=8,
-                 anisotropy_multiplier=3.0,
-                 anisotropy_delta_coef=1.0,
-                 target_anisotropy=0.9,
+                 target_AR=0.9,
                  division_jitter=0.1,
                  torque_rate=0.5,
                  seed: Optional[int]=None):
@@ -142,9 +139,8 @@ class ColonyEnv(gym.Env):
         #self.fourier_K = fourier_K
         self.rng = np.random.default_rng(seed)
         self.dt = 1.0 # step duration
-        self.anisotropy_multiplier = anisotropy_multiplier
-        self.target_anisotropy = target_anisotropy
-        self.anisotropy_delta_coef = anisotropy_delta_coef  # weight for positive anisotropy improvements (delta-based reward)
+        self.target_AR = target_AR
+        self.AR_delta_coef = 2.0 # coefficient for aspect ratio delta reward
         
         # ---------- Reward parameters ----------
         self.r_grow = 0.005 # Small reward for growing
@@ -198,7 +194,7 @@ class ColonyEnv(gym.Env):
         first = StickCell(pos=np.array([cx, cy], dtype=float), theta=0.0, length=self.L_init)
         self.cells = [first]
         # Store previous per-cell anisotropy for delta-based rewards; None on first step
-        self.prev_anisotropy = None
+        self.prev_AR = None
         obs = self._gather_obs()
         return obs, {} # empty info
 
@@ -277,24 +273,17 @@ class ColonyEnv(gym.Env):
         self.t += 1
         # gather observations, rewards, and check for termination
         obs = self._gather_obs()
-        final_rewards, Anisotropy, delta_stats = self._compute_rewards(
+        final_rewards, current_AR, delta_stats = self._compute_rewards(
             rewards_for_acted_cells, survivor_indices_from_original_list
         )
         
-        # Calculate Aspect Ratio for info
-        all_points = np.array([c.pos for c in self.cells])
-        colony_ar = pca_aspect_ratio(all_points)
-
         terminated, truncated = self._check_done()
         info = {
             "n_cells": len(self.cells),
             "survivor_indices": survivor_indices_from_original_list,
             "invalid_divisions": invalid_divisions,
-            "mean_anisotropy": Anisotropy,
-            "colony_aspect_ratio": colony_ar,
-            "mean_delta_anisotropy": delta_stats["mean_delta"],
-            "frac_positive_delta": delta_stats["frac_positive"],
-            "delta_reward_mean": delta_stats["delta_reward_mean"],
+            "colony_aspect_ratio": current_AR,
+            "percentage_delta_rewards": delta_stats["percentage_delta_rewards"],
         }
         # The RL framework will receive observations for the new agents and rewards for the new agents.
         # note that the length of obs (and cells) may differ from final_rewards due to divisions.
@@ -454,69 +443,44 @@ class ColonyEnv(gym.Env):
         """
         N_current = len(self.cells)
         if N_current == 0:
-            return rewards_for_acted, 0.0, {"mean_delta": 0.0, "frac_positive": 0.0, "delta_reward_mean": 0.0}
+            return rewards_for_acted, 0.0, {"percentage_delta_rewards": 0.0}
 
-        # Compute current anisotropy for ALL current cells (survivors placed first, then new children)
-        all_centers = np.array([c.pos for c in self.cells])
-        all_orientations = np.array([c.theta for c in self.cells])
-        current_anisotropy = get_local_anisotropy(all_centers, all_orientations, self.anisotropy_multiplier) # a array
+        
+        # Calculate Aspect Ratio
+        all_points = np.array([c.pos for c in self.cells])
+        current_AR = pca_aspect_ratio(all_points)
 
         prev_count = len(rewards_for_acted)  # number of cells that acted this step (before any division effects)
         size_reward = min(N_current / self.max_cells, 1.0)
         rewards_for_acted += (size_reward * self.r_colony_size) / max(prev_count, 1)
 
-        # Delta-based anisotropy reward only for survivors; dividing parents rely on division rewards
-        """
-        Mapping delta to reward:
-            Several options:
-
-            a) Linear (simple):
-            morph_reward[i] = alpha * dA[i]
-            (You can clip: morph_reward = alpha * np.clip(dA, -clip_down, clip_up))
-
-            b) Positive-only:
-            morph_reward[i] = alpha * max(dA[i], 0.0)
-            (Only reward improvements, ignore regressions.)
-
-            c) Smooth asymmetric:
-            morph_reward[i] = alpha_pos * max(dA[i],0) + alpha_neg * min(dA[i],0)
-            (Allow mild penalty for decreasing order.)
-
-            d) Logistic shaping for robustness:
-            morph_reward[i] = alpha * tanh(dA[i] / temp)
-            Helps when noise causes tiny fluctuations.
-        """
-        delta_reward_mean = 0.0
-        mean_delta = 0.0
-        frac_positive = 0.0
-        if survivor_indices and self.prev_anisotropy is not None and len(self.prev_anisotropy) >= max(survivor_indices) + 1:
-            survivor_count = len(survivor_indices)
-            current_survivor_anis = current_anisotropy[:survivor_count]
-            prev_survivor_anis = self.prev_anisotropy[survivor_indices]
-            
+        # percentage of delta rewards in the total rewards
+        percentage_delta_rewards = 0.0
+        
+        if self.prev_AR is not None:
             # Calculate distance to target
-            current_dist = np.abs(current_survivor_anis - self.target_anisotropy)
-            prev_dist = np.abs(prev_survivor_anis - self.target_anisotropy)
+            current_dist = abs(current_AR - self.target_AR)
+            prev_dist = abs(self.prev_AR - self.target_AR)
 
             # Improvement is positive if we got closer to the target
-            deltas = prev_dist - current_dist 
+            delta = prev_dist - current_dist
             
-            positive_deltas = np.clip(deltas, 0.0, None) # only positive improvements
-            delta_rewards = self.anisotropy_delta_coef * positive_deltas # linear reward for positive improvements
-            rewards_for_acted[:survivor_count] += delta_rewards / max(survivor_count, 1)
-            mean_delta = float(np.mean(deltas)) if deltas.size > 0 else 0.0
-            frac_positive = float(np.mean(positive_deltas > 0)) if positive_deltas.size > 0 else 0.0
-            delta_reward_mean = float(np.mean(delta_rewards)) if delta_rewards.size > 0 else 0.0
+            if delta > 0:
+                reward_val = self.AR_delta_coef * delta
+                rewards_for_acted += reward_val
+                
+                percentage_delta_rewards = reward_val / np.sum(rewards_for_acted) if np.sum(rewards_for_acted) != 0 else 0.0
 
-        # Update stored anisotropy for all current cells (baseline for next step)
-        self.prev_anisotropy = current_anisotropy.copy()
+        # Update stored AR
+        self.prev_AR = current_AR
+        
 
         delta_stats = {
-            "mean_delta": mean_delta,
-            "frac_positive": frac_positive,
-            "delta_reward_mean": delta_reward_mean,
+            "percentage_delta_rewards": percentage_delta_rewards,
         }
-        return rewards_for_acted, float(np.mean(current_anisotropy)), delta_stats
+        
+        
+        return rewards_for_acted, current_AR, delta_stats
 
     def _check_done(self):
         """
