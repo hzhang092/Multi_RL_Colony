@@ -18,6 +18,8 @@ Outputs are saved under `evaluations/plots/`.
 
 import os
 import sys
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 
@@ -40,17 +42,18 @@ from agents.ppo_agent import PPOAgent
 SEED: int = 686
 ROLLOUT_STEPS: int = 200        # number of env steps to sample data
 MAX_EPISODES: int = 3           # cap episodes if they end early
-DETERMINISTIC: bool = True      # argmax vs sampling during rollout
+DETERMINISTIC: bool = False      # argmax vs sampling during rollout
 
 # Model checkpoint to load (required when USE_TRAINED=True)
 USE_TRAINED: bool = True
-CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1112-1700.pt"  # or saved_checkpoints/... if preferred
+CHECKPOINT_NAME: str = "1126-1"  #!!!!!
+CHECKPOINT_PATH: str = f"saved_checkpoints/ppo_colony_final-{CHECKPOINT_NAME}.pt"  # or saved_checkpoints/... if preferred
 
 # Device
 DEVICE: Optional[str] = None    # None auto-selects, or 'cpu'/'cuda'
 
 # Output
-PLOTS_DIR = Path("evaluations/plots")
+PLOTS_DIR = Path(f"evaluations/plots/{CHECKPOINT_NAME}_policy_inspector") #!!!!!
 SAVE_FIG_DPI = 140
 
 
@@ -62,12 +65,16 @@ FEATURES = [
     (3, "orientation_cos"),
     (4, "local_density"),
     (5, "pressure_proxy"),
+    #(6, "anisotropy"),
 ]
 
 PAIRWISE_TO_PLOT = [
     (0, 4),  # rel_length vs local_density
     (0, 5),  # rel_length vs pressure_proxy
     (1, 4),  # rel_age vs local_density
+    (1, 5),  # rel_age vs pressure_proxy
+    #(0, 6),  # rel_length vs anisotropy
+    #(1, 6),  # rel_age vs anisotropy
 ]
 
 

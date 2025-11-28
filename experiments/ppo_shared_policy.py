@@ -1,7 +1,7 @@
 ## deprecated, split into agents/ppo_agent.py and experiments/ppo_train.py
 
 import os
-os.environ['KMP_DUPLICATE_LIB_OK']='True'
+os.environ['KMP_DUPLICATE_LIB_OK']='TRUE'
 # ppo_full_trainer.py
 # Full PPO trainer for shared-policy ColonyEnv.
 # Usage: python ppo_full_trainer.py

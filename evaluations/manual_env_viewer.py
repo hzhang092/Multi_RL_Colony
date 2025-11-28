@@ -24,6 +24,8 @@ import sys
 import time
 from pathlib import Path
 
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 import numpy as np
 import torch
 import matplotlib.pyplot as plt

@@ -13,6 +13,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional, Any
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 import numpy as np
 import torch
@@ -35,7 +36,7 @@ except Exception:
 # CONFIG (edit these)
 # ======================
 SEED: int = 686
-MAX_STEPS: int = 120
+MAX_STEPS: int = 300
 RENDER_INTERVAL: int = 2      # show frame every N steps
 FIGSIZE = (7, 7)
 
@@ -50,8 +51,8 @@ FINAL_PAUSE_SEC: float = 2.0   # used if FINAL_BLOCK=False
 
 # Policy selection
 USE_TRAINED: bool = True  # False: random policy
-CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1102-1305.pt" #"saved_checkpoints/ppo_colony_final-1013-3.pt"  # ignored if USE_TRAINED=False
-DETERMINISTIC: bool = False   # True: argmax; False: stochastic sampling
+CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1124-1.pt" #"saved_checkpoints/ppo_colony_400-1123-2300.pt" #"saved_checkpoints/ppo_colony_final-1013-3.pt"  # ignored if USE_TRAINED=False
+DETERMINISTIC: bool = True   # True: argmax; False: stochastic sampling
 
 # Device for policy
 DEVICE: Optional[str] = None  # None auto-selects; set to 'cpu' to force CPU
@@ -127,6 +128,8 @@ def main():
         actions = select_actions(obs, agent)
         obs, rewards, terminated, truncated, info = env.step(actions)
         last_step = step
+        
+        print(info.get('colony_aspect_ratio', -1.0))
 
         if step % RENDER_INTERVAL == 0 or terminated or truncated or step == 0:
             img = env.render(mode="rgb_array")

@@ -1,0 +1,10 @@
+*.pyc
+__pycache__/
+
+ppo_checkpoints/
+ppo_checkpoints_original/
+frames/
+logs/
+evaluations/plots/
+evaluations/results/
+saved_checkpoints/
