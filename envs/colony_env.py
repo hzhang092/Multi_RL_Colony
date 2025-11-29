@@ -105,8 +105,9 @@ class ColonyEnv(gym.Env):
                  L_init=1.0,
                  L_divide=2.0,
                  max_cells=80,
+                 max_steps=150,
                  K_nn=6, # number of nearest neighbors in observation
-                 target_AR=0.9,
+                 target_AR=5.0,
                  division_jitter=0.1,
                  torque_rate=0.5,
                  seed: Optional[int]=None):
@@ -126,7 +127,7 @@ class ColonyEnv(gym.Env):
         # ---------- Environment parameters ----------
         self.world_size = np.array(world_size, dtype=float)
         self.max_cells = max_cells
-        self.max_steps = 150
+        self.max_steps = max_steps
         
         # ----------- Cell parameters ----------
         self.L_init = L_init # initial length of the first cell
@@ -139,8 +140,9 @@ class ColonyEnv(gym.Env):
         #self.fourier_K = fourier_K
         self.rng = np.random.default_rng(seed)
         self.dt = 1.0 # step duration
-        self.target_AR = target_AR
-        self.AR_delta_coef = 2.0 # coefficient for aspect ratio delta reward
+        # Ensure target_AR is feasible for PCA aspect ratio (which is >= 1)
+        self.target_AR = max(float(target_AR), 1.0)
+        self.AR_delta_coef = 0.5 # coefficient for aspect ratio delta reward
         
         # ---------- Reward parameters ----------
         self.r_grow = 0.005 # Small reward for growing
@@ -148,7 +150,7 @@ class ColonyEnv(gym.Env):
         self.r_div_success = 3.0 # Reward for successful division (increased)
         self.p_invalid_div = -0.001 # Small penalty for invalid division attempt (added penalty)
         self.p_living = -0.0001 # small penalty per timestep to encourage faster growth
-        self.p_too_long = 0 #-0.005 # penalty for cells that grow too long (to discourage endless growth)
+        self.p_too_long = -0.01 # penalty for cells that grow too long (to discourage endless growth)
         self.r_colony_size = 2 # weight for colony size in global reward
         self.r_morphology = 5.0 # weight for morphology matching in global reward
 
@@ -463,22 +465,28 @@ class ColonyEnv(gym.Env):
         size_reward = min(N_current / self.max_cells, 1.0)
         rewards_for_acted += (size_reward * self.r_colony_size) / max(prev_count, 1)
 
+        # Symmetric morphology reward: encourage AR close to target_AR (>=1)
+        # Normalize error by target_AR to produce a bounded [0,1] similarity score.
+        # score = 1 when current_AR == target_AR; decreases linearly with relative error.
+        target_ar = self.target_AR
+        rel_error = abs(current_AR - target_ar) / max(target_ar, 1e-6)
+        morph_score = 1.0 - float(np.clip(rel_error, 0.0, 1.0))
+        # Distribute global morphology reward evenly to acted cells this step.
+        rewards_for_acted += (morph_score * self.r_morphology) / max(prev_count, 1)
+
         # percentage of delta rewards in the total rewards
         percentage_delta_rewards = 0.0
         
         if self.prev_AR is not None:
-            # Calculate distance to target
+            # Delta-based bonus for moving closer to target (additive and symmetric)
             current_dist = abs(current_AR - self.target_AR)
             prev_dist = abs(self.prev_AR - self.target_AR)
-
-            # Improvement is positive if we got closer to the target
-            delta = prev_dist - current_dist
-            
-            if delta > 0:
+            delta = prev_dist - current_dist  # positive if improved
+            if delta != 0.0:
                 reward_val = self.AR_delta_coef * delta
-                rewards_for_acted += reward_val
-                
-                percentage_delta_rewards = reward_val / np.sum(rewards_for_acted) if np.sum(rewards_for_acted) != 0 else 0.0
+                rewards_for_acted += reward_val / max(prev_count, 1)
+                total = np.sum(rewards_for_acted)
+                percentage_delta_rewards = reward_val / total if total != 0 else 0.0
 
         # Update stored AR
         self.prev_AR = current_AR
