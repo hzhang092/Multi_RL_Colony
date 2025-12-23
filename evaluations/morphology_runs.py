@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional, Any, Tuple
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 import numpy as np
 import csv
@@ -51,14 +51,14 @@ NEIGHBORHOOD_MULTIPLIER: float = 3.0   # neighbourhood_range = multiplier * env.
 # Policy config (set USE_TRAINED=True to use a checkpoint)
 USE_TRAINED: bool = True
 CHECKPOINT_FOLDER: str = "saved_checkpoints"
-CHECKPOINT_NAME: str = "ppo_colony_final-1112-1700.pt"
+CHECKPOINT_NAME: str = "ppo_colony_final-1129-4.pt"
 CHECKPOINT_PATH: str = f"{CHECKPOINT_FOLDER}/{CHECKPOINT_NAME}"  # used only if USE_TRAINED=True
-DETERMINISTIC: bool = False   # True: argmax over logits; False: stochastic sampling
+DETERMINISTIC: bool = True   # True: argmax over logits; False: stochastic sampling
 DEVICE: Optional[str] = None # None auto-selects; set to 'cpu' to force CPU
 
 # Save CSV results
-SAVE_CSV: bool = False
-CSV_PATH: str = "evaluations/" + CHECKPOINT_NAME.replace(".pt", ".csv")
+SAVE_CSV: bool = True
+CSV_PATH: str = "evaluations/results/" + CHECKPOINT_NAME.replace(".pt", ".csv")
 
 
 def _fallback_make_action_dicts(action_types: np.ndarray):
@@ -102,7 +102,7 @@ def _select_actions(obs: np.ndarray, agent: Optional[Any]) -> list:
     return sampled_type.detach().cpu().numpy().astype(int).tolist()
 
 
-def run_single_episode(env: ColonyEnv, target_cells: int, max_steps: int, neighbourhood_range: float, agent: Optional[Any]) -> Tuple[float, float]:
+def run_single_episode(env: ColonyEnv, target_cells: int, max_steps: int, neighbourhood_range: float, agent: Optional[Any]) -> Tuple[float, float, float]:
     """Run one random-policy rollout until target cell count or step cap.
 
     Returns (mean local anisotropy, colony aspect ratio) at the stopping point.
@@ -129,7 +129,8 @@ def run_single_episode(env: ColonyEnv, target_cells: int, max_steps: int, neighb
             mean_la = float(np.mean(la)) if la.size > 0 else 0.0
             
             ar = pca_aspect_ratio(centers)
-            return mean_la, ar
+            print(f"Reached target cells or termination at step {steps}.")
+            return mean_la, ar, len(env.cells)
 
     # If we exit due to step cap, compute anyway
     centers = np.array([c.pos for c in env.cells], dtype=float)
@@ -139,13 +140,12 @@ def run_single_episode(env: ColonyEnv, target_cells: int, max_steps: int, neighb
     mean_la = float(np.mean(la)) if la.size > 0 else 0.0
     
     ar = pca_aspect_ratio(centers) if centers.size > 0 else 1.0
-    return mean_la, ar
+    return mean_la, ar, len(env.cells)
 
 
 def main():
-    env = ColonyEnv(seed=SEED, 
-                    division_jitter=0.15,
-                    torque_rate=0.1)
+    # Use defaults to match training environment (torque_rate=0.5, division_jitter=0.1)
+    env = ColonyEnv(seed=SEED)
     # Tie neighbourhood range to environment division length
     neighbourhood_range = NEIGHBORHOOD_MULTIPLIER * getattr(env, 'L_divide', 2.0)
 
@@ -161,13 +161,13 @@ def main():
     results_ar = []
     
     for i in range(NUM_RUNS):
-        mean_aniso, ar = run_single_episode(env, TARGET_CELLS, MAX_STEPS_PER_RUN, neighbourhood_range, agent)
+        mean_aniso, ar, num_cells = run_single_episode(env, TARGET_CELLS, MAX_STEPS_PER_RUN, neighbourhood_range, agent)
         results_aniso.append(mean_aniso)
         results_ar.append(ar)
         
         policy_desc = "trained" if agent is not None else "random"
         det_desc = "det" if DETERMINISTIC and agent is not None else ("stoch" if (agent is not None and not DETERMINISTIC) else "uniform")
-        print(f"Run {i+1:02d}/{NUM_RUNS} | policy={policy_desc}/{det_desc} | Anisotropy={mean_aniso:.4f} | AR={ar:.4f}")
+        print(f"Run {i+1:02d}/{NUM_RUNS} | policy={policy_desc}/{det_desc} | Anisotropy={mean_aniso:.4f} | AR={ar:.4f} | Cells={num_cells}")
 
     results_aniso_np = np.array(results_aniso, dtype=float)
     mean_aniso_all = float(np.mean(results_aniso_np)) if results_aniso_np.size else 0.0

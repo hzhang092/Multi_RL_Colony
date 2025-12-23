@@ -42,12 +42,13 @@ from agents.ppo_agent import PPOAgent
 SEED: int = 686
 ROLLOUT_STEPS: int = 200        # number of env steps to sample data
 MAX_EPISODES: int = 3           # cap episodes if they end early
-DETERMINISTIC: bool = False      # argmax vs sampling during rollout
+DETERMINISTIC: bool = True      # argmax vs sampling during rollout
 
 # Model checkpoint to load (required when USE_TRAINED=True)
 USE_TRAINED: bool = True
-CHECKPOINT_NAME: str = "1126-1"  #!!!!!
-CHECKPOINT_PATH: str = f"saved_checkpoints/ppo_colony_final-{CHECKPOINT_NAME}.pt"  # or saved_checkpoints/... if preferred
+CHECKPOINT_PREFIX = "final"
+CHECKPOINT_NAME: str = "1129-3"  #!!!!!
+CHECKPOINT_PATH: str = f"saved_checkpoints/ppo_colony_{CHECKPOINT_PREFIX}-{CHECKPOINT_NAME}.pt"  # or saved_checkpoints/... if preferred
 
 # Device
 DEVICE: Optional[str] = None    # None auto-selects, or 'cpu'/'cuda'

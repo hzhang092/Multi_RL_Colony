@@ -41,8 +41,8 @@ RENDER_INTERVAL: int = 2      # show frame every N steps
 FIGSIZE = (7, 7)
 
 # Output frames
-SAVE_FRAMES: bool = False
-FRAMES_DIR: str = "eval_frames"  # used only if SAVE_FRAMES=True
+SAVE_FRAMES: bool = True
+FRAMES_DIR: str = "evaluations/frames"  # used only if SAVE_FRAMES=True
 
 # Final frame display options
 SHOW_FINAL: bool = True        # ensure the last frame is displayed after loop ends
@@ -51,7 +51,7 @@ FINAL_PAUSE_SEC: float = 2.0   # used if FINAL_BLOCK=False
 
 # Policy selection
 USE_TRAINED: bool = True  # False: random policy
-CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1124-1.pt" #"saved_checkpoints/ppo_colony_400-1123-2300.pt" #"saved_checkpoints/ppo_colony_final-1013-3.pt"  # ignored if USE_TRAINED=False
+CHECKPOINT_PATH: str = "saved_checkpoints/ppo_colony_final-1129-3.pt" #"saved_checkpoints/ppo_colony_400-1123-2300.pt" #"saved_checkpoints/ppo_colony_final-1013-3.pt"  # ignored if USE_TRAINED=False
 DETERMINISTIC: bool = True   # True: argmax; False: stochastic sampling
 
 # Device for policy
@@ -105,7 +105,7 @@ def select_actions(obs: np.ndarray, agent: Optional[Any]):
 
 
 def main():
-    env = ColonyEnv(seed=SEED)
+    env = ColonyEnv(seed=SEED, max_steps=MAX_STEPS)
     obs, _ = env.reset()
     obs_dim = obs.shape[1] if hasattr(obs, 'shape') and len(obs.shape) == 2 else 6
     agent = load_agent(CHECKPOINT_PATH, obs_dim) if USE_TRAINED else None
