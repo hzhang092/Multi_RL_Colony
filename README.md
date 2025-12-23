@@ -8,14 +8,14 @@ This repository accompanies the CS686 project report *"Multi-Agent RL with Authe
 
 - **Environment**: 2D continuous world with a dynamic population of rod-shaped agents.
 - **Agents**: Each bacterium is an agent with position, orientation, length, and age.
-- **Actions**: Discrete action space \(A = \{0: \text{Dormant}, 1: \text{Grow}, 2: \text{Divide}\}\).
+- **Actions**: Discrete action space $A = \{0: \text{Dormant}, 1: \text{Grow}, 2: \text{Divide}\}$.
 - **Physics**: Simple overlap relaxation with repulsive forces and limited torque (no friction or adhesion).
 - **Algorithm**: Proximal Policy Optimization (PPO) with a **shared policy** across all agents.
 - **Goal**: Study how local RL policies give rise to global colony properties (e.g., aspect ratio, anisotropy) and how reward shaping interacts with physical constraints.
 
 High-level findings from the project:
 
-- Agents learn **biologically plausible division timing** (divide near a length threshold \(L_{divide}\)).
+- Agents learn **biologically plausible division timing** (divide near a length threshold $L_{divide}$).
 - Pure morphology rewards can be **exploited** (agents grow into "giant cells" if length is unconstrained).
 - Enforcing realistic division (length penalties) prevents exploitation but makes colony aspect ratio stay near a baseline circular morphology, highlighting the importance of the underlying physics (lack of friction/adhesion).
 
@@ -49,21 +49,21 @@ The full project report (LaTeX source) is in `reports/` (e.g., `project_report.t
 
 **Observation (per agent, 6D)**
 
-- Relative length: \(L_i / L_{divide}\), clipped to \([0, 1.25]\).
-- Relative age: \(t_i / T_{max}\), clipped to \([0, 1]\).
-- Orientation: \(\sin \theta_i, \cos \theta_i\).
+- Relative length: $L_i / L_{divide}$, clipped to \([0, 1.25]\).
+- Relative age: $t_i / T_{max}$, clipped to \([0, 1]\).
+- Orientation: $\sin \theta_i, \cos \theta_i$.
 - Local density: Gaussian-weighted sum over nearest neighbors.
 - Pressure proxy: Inverse-distance-based average over nearest neighbors.
 
 **Reward structure**
 
-- Local reward \(R_{local}^i\):
+- Local reward $R_{local}^i$:
 	- Positive reward for valid **Grow** and **Divide** actions.
 	- Small existence penalty to encourage efficient life cycles.
 	- Strong penalty if a cell becomes **too long** (prevents giant-cell exploit).
-- Global reward \(R_{global}\):
+- Global reward $R_{global}$:
 	- Encourages colony size up to a maximum cell count.
-	- Morphology term that rewards aspect ratios close to a target \(AR_{target}\).
+	- Morphology term that rewards aspect ratios close to a target $AR_{target}$.
 	- Delta-improvement term that rewards steps which move the aspect ratio closer to the target.
 
 Global terms are shared among all acting agents in a step to stabilize credit assignment in a variable-population setting.
@@ -72,7 +72,7 @@ Global terms are shared among all acting agents in a step to stabilize credit as
 
 - Shared-policy PPO (homogeneous multi-agent): one network used by all cells.
 - Two-layer MLP encoder (128 hidden units) with separate actor and critic heads.
-- Advantage estimation: GAE with \(\gamma = 0.99, \lambda = 0.95\).
+- Advantage estimation: GAE with $\gamma = 0.99, \lambda = 0.95$.
 - Training schedule used in the report (typical configuration):
 	- 500 PPO updates, ~300 environment steps per update (~150k steps total).
 	- Mini-batch PPO epochs over collected rollouts.
